@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
+from app.analysis import explain, workloads
+from app.analysis.orchestrator import run_question
+from app.collectors import labels
 from app.core import diagnostics, platform_ops
-from app.core.sampler import Snapshot
+from app.core.sampler import SampleRecord, Snapshot
 from app.core.storage_manager import ScanResult
 from app.core.system_info import StaticInfo
 from app.utils.constants import ACCESS_DENIED_MESSAGE, TOP_PROCESSES_SHOWN, UNAVAILABLE
@@ -46,6 +49,8 @@ def build_report(
     scan: Optional[ScanResult] = None,
     large_file_threshold_mb: int = 500,
     now: Optional[datetime] = None,
+    window: Optional[Sequence[SampleRecord]] = None,
+    workload: str = workloads.DEFAULT_WORKLOAD,
 ) -> str:
     """Assemble the report text from data already collected (no new system reads)."""
     now = now or datetime.now()
@@ -129,6 +134,13 @@ def build_report(
                 lines.append(f"  {name[:30]:<32}{format_bytes(size)}   {path}")
         else:
             lines.append("  No files above the selected size threshold were found.")
+
+    lines += _section("EVIDENCE SOURCES")
+    lines += labels.evidence_report(snapshot.readings).splitlines()
+
+    lines += _section("OSCOPE'S ASSESSMENT")
+    assessment = run_question("everything", snapshot, window or [], workload)
+    lines += explain.result_to_text(assessment).splitlines()
 
     lines += _section("DIAGNOSTIC SUMMARY")
     lines += diagnostics.summary_lines(snapshot.findings)

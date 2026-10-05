@@ -11,6 +11,7 @@ from app.core import platform_ops, report, windows_backend
 from app.core.sampler import Sampler, Snapshot
 from app.core.system_info import get_static_info
 from app.gui.components import FlatButton, apply_theme, font
+from app.gui.ask_view import AskView
 from app.gui.dialogs import AppSettings, show_about, show_settings
 from app.history.settings_store import SettingsStore
 from app.gui.overview_view import OverviewView
@@ -21,6 +22,7 @@ from app.utils.constants import APP_NAME, APP_SUBTITLE, COLORS
 from app.utils.formatting import format_clock
 
 _NAV_ITEMS = [
+    ("ask", "◎   Ask OScope"),
     ("overview", "▣   Overview"),
     ("processes", "▤   Processes"),
     ("storage", "▰   Storage"),
@@ -47,7 +49,7 @@ class MainWindow:
         self._build_sidebar()
         self._build_content()
         self.storage.set_threshold(self.settings.large_file_mb)  # restore the saved threshold
-        self.show_view("overview")  # the app always opens on System Health
+        self.show_view("ask")  # the app opens on the question-first screen
 
         root.bind("<F5>", lambda _e: self.refresh_now())
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -148,10 +150,23 @@ class MainWindow:
         self.content.columnconfigure(0, weight=1)
         self.content.rowconfigure(0, weight=1)
 
+        self.ask = AskView(
+            self.content,
+            self.runner,
+            get_context=lambda: (self.latest, self.sampler.recent_samples()),
+            navigate=self.show_view,
+            workload=self.settings.workload,
+            on_workload_change=self._on_workload_change,
+        )
         self.overview = OverviewView(self.content, self.info)
         self.processes = ProcessesView(self.content, self.runner, self.refresh_now)
         self.storage = StorageView(self.content, self.runner)
-        self._views = {"overview": self.overview, "processes": self.processes, "storage": self.storage}
+        self._views = {
+            "ask": self.ask,
+            "overview": self.overview,
+            "processes": self.processes,
+            "storage": self.storage,
+        }
         for view in self._views.values():
             view.grid(row=0, column=0, sticky="nsew")
 
@@ -181,6 +196,10 @@ class MainWindow:
     def open_settings(self) -> None:
         show_settings(self.root, self.settings, self._apply_settings)
 
+    def _on_workload_change(self, workload: str) -> None:
+        self.settings.workload = workload
+        self.settings_store.save(self.settings)
+
     def _apply_settings(self, settings: AppSettings) -> None:
         self.sampler.set_interval(settings.refresh_interval)
         self.storage.set_threshold(settings.large_file_mb)
@@ -193,7 +212,8 @@ class MainWindow:
             return
         try:
             text = report.build_report(
-                self.info, self.latest, self.storage.last_result, self.storage.threshold_mb
+                self.info, self.latest, self.storage.last_result, self.storage.threshold_mb,
+                window=self.sampler.recent_samples(), workload=self.settings.workload,
             )
             path = report.save_report(text)
         except Exception:  # noqa: BLE001 - never show a traceback to the user

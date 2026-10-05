@@ -416,6 +416,139 @@ class GuiTests(unittest.TestCase):
         self.assertGreaterEqual(overview.status_card.winfo_height(), 120)
         self.assertGreaterEqual(overview.details_card.winfo_height(), 120)
 
+    # -- Phase 3: Ask OScope ---------------------------------------------------------------
+    def _busy_context(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import test_analysis as ta
+
+        readings = dict(ta.busy_readings(**dict([ta.avail("power.on_battery", True), ta.avail("power.mode", "Balanced"),
+                                                 ta.missing("temp.acpi_max"), ta.missing("fan.rpm")])))
+        procs = [ta.proc(i, "chrome.exe", 200) for i in range(1, 20)] + [ta.proc(90, "Photoshop.exe", 3000, cpu=30.0)]
+        snapshot = ta.make_snapshot(cpu=92, mem_pct=91, storage_pct=93, processes=procs, readings=readings, uptime=300)
+        return snapshot, ta.make_window(cpu=92, mem=91, storage=93, readings=readings)
+
+    def _ask(self, question_id, context=None):
+        view = self.window.ask
+        view.last_result = None
+        real = view._get_context
+        if context is not None:
+            view._get_context = lambda: context
+        try:
+            view.ask(question_id)
+            deadline = time.time() + 10
+            while view.last_result is None and time.time() < deadline:
+                pump(self.root, 0.05)
+        finally:
+            view._get_context = real
+        self.assertIsNotNone(view.last_result, "no answer arrived")
+        return view.last_result
+
+    @staticmethod
+    def _texts(widget):
+        found = []
+        for child in widget.winfo_children():
+            if child.winfo_class() == "Label":
+                found.append(str(child.cget("text")))
+            found += GuiTests._texts(child)
+        return found
+
+    def test_21_app_opens_on_the_question_screen(self):
+        self.assertIn("ask", self.window._views)
+        self.assertEqual(list(self.window.ask.question_buttons), ["slow", "ram", "heat", "storage", "everything"])
+        window = self.window
+        window.show_view("ask")
+        self.assertEqual(window._current, "ask")
+
+    def test_22_asking_a_question_renders_the_four_layers_and_what_could_not_be_checked(self):
+        self.window.show_view("ask")
+        result = self._ask("slow", self._busy_context())
+        texts = "\n".join(self._texts(self.window.ask.scroll.body))
+        for expected in ("WHAT WE FOUND", "WHAT IS HAPPENING", "WHAT IS CONTRIBUTING", "WHAT YOU COULD CONSIDER",
+                         "THINGS YOU MAY NOT HAVE NOTICED", "COULD NOT CHECK ON THIS PC", "Measured"):
+            self.assertIn(expected, texts)
+        self.assertIn("High memory use", texts)
+        self.assertEqual(result.question_id, "slow")
+        self.assertTrue(result.relations)
+
+    def test_23_without_data_the_view_waits_instead_of_guessing(self):
+        view = self.window.ask
+        real = view._get_context
+        view._get_context = lambda: (None, [])
+        try:
+            view.ask("slow")
+        finally:
+            view._get_context = real
+        self.assertTrue(any("first measurements" in t for t in self._texts(view.scroll.body)))
+
+    def test_24_only_the_latest_answer_is_shown(self):
+        view = self.window.ask
+        context = self._busy_context()
+        view._get_context = lambda: context
+        try:
+            view.last_result = None
+            view.ask("ram")
+            view.ask("heat")  # asked before the first answer arrived
+            deadline = time.time() + 10
+            while (view.last_result is None or view.last_result.question_id != "heat") and time.time() < deadline:
+                pump(self.root, 0.05)
+        finally:
+            view._get_context = lambda: (self.window.latest, self.window.sampler.recent_samples())
+        self.assertEqual(view.last_result.question_id, "heat")
+        self.assertIn("Why is my laptop hot or loud?", self._texts(view.scroll.body))
+
+    def test_25_copy_as_text_puts_the_answer_on_the_clipboard(self):
+        self._ask("ram", self._busy_context())
+        self.assertTrue(self.window.ask.copy_result_text())
+        copied = self.root.clipboard_get()
+        self.assertIn("Why is my RAM full?", copied)
+        self.assertIn("WHAT WE FOUND", copied)
+
+    def test_26_workload_choice_is_saved_and_reorders_without_hiding(self):
+        view = self.window.ask
+        try:
+            self._ask("slow", self._busy_context())
+            before = sorted(f.id for f in view.last_result.findings)
+            view.workload_var.set("Gaming")
+            context = self._busy_context()
+            view._get_context = lambda: context
+            view._on_workload_selected()  # an answer is on screen, so it is re-asked for the new workload
+            deadline = time.time() + 10
+            while view.last_result.workload != "Gaming" and time.time() < deadline:
+                pump(self.root, 0.05)
+            self.assertEqual(SettingsStore.default().load().workload, "gaming")
+            self.assertEqual(view.last_result.workload, "Gaming")
+            self.assertEqual(sorted(f.id for f in view.last_result.findings), before)
+        finally:
+            view._get_context = lambda: (self.window.latest, self.window.sampler.recent_samples())
+            view.workload_var.set("General heavy use")
+            view._on_workload_selected()
+            pump(self.root, 0.3)
+
+    def test_27_storage_answer_offers_to_open_the_storage_view(self):
+        self.window.show_view("ask")
+        self._ask("storage", self._busy_context())
+        buttons = [w for w in self._all_widgets(self.window.ask.scroll.body)
+                   if w.winfo_class() == "Label" and str(w.cget("text")) == "Open the Storage view"]
+        self.assertTrue(buttons)
+        buttons[0]._command()
+        self.assertEqual(self.window._current, "storage")
+        self.window.show_view("ask")
+
+    @staticmethod
+    def _all_widgets(widget):
+        found = []
+        for child in widget.winfo_children():
+            found.append(child)
+            found += GuiTests._all_widgets(child)
+        return found
+
+    def test_28_show_me_everything_works_on_this_machines_real_data(self):
+        pump(self.root, 1.0)  # let a few real samples accumulate
+        result = self._ask("everything")
+        self.assertEqual({f.id for f in result.findings}, {"cpu", "memory", "disk", "gpu", "storage", "power", "thermal", "startup"})
+        self.assertTrue(result.sections)
+        self.assertTrue(result.summary)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,25 @@ EVIDENCE_ROWS: list[tuple[str, str]] = [
     ("startup.enabled_count", "Startup programs"),
 ]
 
+_TITLES = dict(EVIDENCE_ROWS) | {
+    "mem.commit_used_bytes": "Memory commitment",
+    "mem.commit_limit_bytes": "Memory commitment",
+    "gpu.busiest_engine": "GPU load",
+    "disk.total_bps": "Disk activity",
+    "power.charging": "Battery",
+    "power.battery_saver": "Battery saver",
+    "startup.entries": "Startup programs",
+    "cpu.percent": "CPU load",
+    "memory.percent": "Memory use",
+    "storage.percent": "Drive space",
+}
+
+
+def title_for(name: str) -> str:
+    """Friendly name of a reading id (falls back to the id itself)."""
+    return _TITLES.get(name, name)
+
+
 _NOT_SUPPORTED = Reading.missing("", Availability.NOT_SUPPORTED, "not collected on this operating system")
 
 

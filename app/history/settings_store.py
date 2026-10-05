@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
+from app.analysis.workloads import DEFAULT_WORKLOAD, WORKLOADS
 from app.core import platform_ops
 from app.utils.constants import LARGE_FILE_THRESHOLD_MB, REFRESH_INTERVAL_CHOICES, REFRESH_INTERVAL_SECONDS
 
@@ -23,6 +24,7 @@ class AppSettings:
 
     refresh_interval: int = REFRESH_INTERVAL_SECONDS
     large_file_mb: int = LARGE_FILE_THRESHOLD_MB
+    workload: str = DEFAULT_WORKLOAD  # what the user is mostly doing; only changes the order of explanations
 
     @classmethod
     def from_dict(cls, data: object) -> "AppSettings":
@@ -36,6 +38,9 @@ class AppSettings:
         threshold = data.get("large_file_mb")
         if isinstance(threshold, int) and not isinstance(threshold, bool) and threshold >= 1:
             settings.large_file_mb = threshold
+        workload = data.get("workload")
+        if isinstance(workload, str) and workload in WORKLOADS:
+            settings.workload = workload
         return settings
 
     def to_dict(self) -> dict:

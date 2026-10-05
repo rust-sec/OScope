@@ -35,6 +35,8 @@ DISPLAY_ALIASES = {
     "photoshop.exe": "Adobe Photoshop",
     "illustrator.exe": "Adobe Illustrator",
     "premiere pro.exe": "Adobe Premiere Pro",
+    "adobe premiere pro.exe": "Adobe Premiere Pro",
+    "googledrivefs.exe": "Google Drive",
     "afterfx.exe": "Adobe After Effects",
     "resolve.exe": "DaVinci Resolve",
     "obs64.exe": "OBS Studio",
