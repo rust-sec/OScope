@@ -23,7 +23,7 @@ class BackgroundRunner:
         self._poll_ms = poll_ms
         self._queue: "queue.Queue[tuple[Callable[..., None], tuple]]" = queue.Queue()
         self._closed = False
-        self._root.after(self._poll_ms, self._poll)
+        self._after_id: Optional[str] = self._root.after(self._poll_ms, self._poll)
 
     def post(self, callback: Callable[..., None], *args: Any) -> None:
         """Queue ``callback(*args)`` to run on the main thread (safe from any thread)."""
@@ -50,8 +50,14 @@ class BackgroundRunner:
         threading.Thread(target=target, daemon=True).start()
 
     def close(self) -> None:
-        """Stop polling (call when the window is closing)."""
+        """Stop polling (call when the window is closing). Also cancels the timer that is already scheduled."""
         self._closed = True
+        if self._after_id is not None:
+            try:
+                self._root.after_cancel(self._after_id)
+            except Exception:  # noqa: BLE001 - the window may already be gone
+                pass
+            self._after_id = None
 
     def _poll(self) -> None:
         if self._closed:
@@ -66,6 +72,7 @@ class BackgroundRunner:
         except queue.Empty:
             pass
         try:
-            self._root.after(self._poll_ms, self._poll)
+            self._after_id = self._root.after(self._poll_ms, self._poll)
         except Exception:  # window already destroyed
             self._closed = True
+            self._after_id = None

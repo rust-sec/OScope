@@ -33,6 +33,12 @@ def main() -> int:
     except ImportError:
         return _fail("The 'psutil' package is not installed.\nRun:  pip install -r requirements.txt")
 
+    if "--probe" in sys.argv[1:]:
+        # Developer/diagnostic mode: print what every collector reports here. No window needed.
+        from app.collectors.probe import run_probe
+
+        return run_probe()
+
     try:
         import tkinter  # noqa: F401
     except ImportError:
@@ -40,7 +46,9 @@ def main() -> int:
 
     try:
         from app.gui.main_window import run
+        from app.utils.logging_setup import setup_logging
 
+        setup_logging()
         run()
     except Exception as exc:  # noqa: BLE001
         if os.environ.get("OSCOPE_DEBUG") == "1":

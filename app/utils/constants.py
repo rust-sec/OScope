@@ -30,12 +30,28 @@ STORAGE_FULL_PERCENT = 80      # "Storage getting full"  (info)
 STORAGE_LOW_PERCENT = 90       # "Low storage"           (warning)
 STORAGE_CRITICAL_PERCENT = 95  # "Very low storage"      (critical)
 
+# Further thresholds used by the question-based diagnostics. These are OScope's own rough cut-offs
+# for deciding what is worth pointing out; they are not hardware or Microsoft limits, and the
+# explanations say what was measured rather than quoting them as rules.
+GPU_HIGH_PERCENT = 85              # busiest GPU engine
+COMMIT_HIGH_PERCENT = 90           # committed memory as a share of the commit limit
+DISK_HEAVY_BYTES_PER_SEC = 100 * 1024 * 1024   # read + write throughput; says nothing about how busy the disk is
+TEMP_WARM_C = 70                   # ACPI thermal zone
+TEMP_HOT_C = 85
+LOW_FREE_PERCENT = 15              # system drive free space considered low for creative tools
+LOW_FREE_BYTES = 20 * 1024 ** 3
+MANY_STARTUP_ENTRIES = 10
+MANY_BROWSER_PROCESSES = 10
+ACTIVE_CPU_PERCENT = 1.0           # a program group using at least this much CPU counts as active
+TOP_GROUPS_SHOWN = 5
+
 # --------------------------------------------------------------------------- #
 # Defaults / limits
 # --------------------------------------------------------------------------- #
 REFRESH_INTERVAL_SECONDS = 2
 REFRESH_INTERVAL_CHOICES = (1, 2, 3, 5, 10)
 MIN_SAMPLE_GAP_SECONDS = 1.0        # CPU % is meaningless if sampled faster than this
+SAMPLE_WINDOW_SIZE = 120            # recent samples kept in memory for "sustained" checks (~4 min at 2 s)
 
 LARGE_FILE_THRESHOLD_MB = 500
 MAX_LARGE_FILES_KEPT = 200          # scanner keeps only the N biggest files in memory
@@ -43,6 +59,7 @@ LARGEST_DIRS_SHOWN = 15
 TOP_PROCESSES_SHOWN = 5
 
 MAX_TREE_NODES = 300_000            # soft cap on retained treemap nodes; aggregates stay correct past this
+MAX_FILES_PER_FOLDER = 2_000        # per folder, the smallest files beyond this are folded into one "(N smaller files)" item
 TREEMAP_MAX_RECTS_PER_LEVEL = 500   # per-zoom-level render cap; remainder lumped into one "+N more" rect
 
 # --------------------------------------------------------------------------- #

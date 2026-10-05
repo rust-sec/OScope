@@ -1,118 +1,137 @@
 # OScope
 
-**A System Health and Resource Analyzer for Windows**
+**An explainable system-intelligence and storage-analysis tool for Windows**
 
-*A lightweight utility for process, CPU, memory, and storage analysis using Windows operating-system interfaces.*
+*It uses operating-system information to help you understand your computer: what is happening, what the evidence is, and what you may have overlooked. It does not ask you to understand the operating system.*
 
-> **Edition note:** the original brief described a Windows + Linux tool. This build is **Windows only**.
-> On any other operating system OScope prints *"Unsupported operating system. OScope currently supports Windows only."*
-> and exits without crashing. Linux `/proc` is explained in the documentation for comparison, but is not used by the code.
+> **Edition note:** this build is **Windows only**. On any other operating system OScope prints
+> *"Unsupported operating system. OScope currently supports Windows only."* and exits cleanly.
+> A developer switch (`OSCOPE_DEV=1`) lets the OS-independent logic run elsewhere; Windows-only readings then
+> report *Not supported on this OS*. Linux `/proc` is explained in the documentation for comparison only.
+>
+> **Verification note:** this version was developed and tested on Linux. Everything that does not need Windows
+> (parsing, availability rules, diagnostics, history, scanning, the whole GUI) is covered by automated tests.
+> The Windows-specific reads (performance counters, WMI, registry, power API, file attributes) are tested against
+> hand-written samples and still need a run on a real PC: see [`docs/WINDOWS_VERIFICATION.md`](docs/WINDOWS_VERIFICATION.md).
 
 ---
 
-## Overview
+## What it is
 
-OScope puts the most useful "why is my PC slow?" information on one screen: CPU load, memory, disk space,
-uptime, the processes using the most resources, and which folders and files eat your storage.
+Most tools show numbers: `RAM 91%`, `CPU 74%`. OScope's job is the step after that.
 
-Its design rule is **Observe → Analyze → Explain**. It reads system information, applies simple rules,
-and explains the result in plain language. It is **read-only**: it never ends a process, deletes a file,
-or changes a setting.
+> *Memory use is high: 91% in use over the last 58 seconds. Chrome has 24 processes and Photoshop is running.
+> Disk activity was high at the same time. The system drive has 7% free.*
 
-## Problem Statement
+Every answer has the same four layers:
 
-Users often experience slow computers, high CPU or RAM usage, and low disk space, and cannot tell what is
-responsible. The information needed to diagnose this is spread across Task Manager, `tasklist`, `wmic`/PowerShell,
-File Explorer, and similar tools. OScope consolidates the essentials in one simple interface.
+1. **What is happening**: a plain-language observation.
+2. **What is contributing**: the measurements behind it (which programs, how much).
+3. **What you may not have noticed**: relationships between measurements that are easy to miss.
+4. **What you could consider**: optional, secondary, and never an automatic action.
 
-## Objectives
+OScope is a **transparency** tool, not an optimizer. It is **read-only**: it never ends a process, deletes a file or
+changes a setting.
 
-1. Retrieve real operating-system information (processes, CPU, memory, storage) without inventing data.
-2. Present it in a clear, responsive desktop interface.
-3. Explain what the numbers mean, without claiming causes it cannot prove.
-4. Demonstrate how an application talks to OS interfaces.
-5. Stay small, reliable and easy to explain.
+### Honest by construction
+
+* A number is shown only when it was really measured. If it cannot be (no sensor, no permission, not supported),
+  OScope says which of those it is and why, instead of guessing.
+* It separates **Measured**, **Seen together** and **Could not verify**. It may say two things were seen together; it
+  never says one made the other happen. A test scans every sentence it can produce for causal wording.
+* "Sustained" means most of the recent window, so one spike never raises a flag.
+
+See [`docs/EVIDENCE_AND_HONESTY.md`](docs/EVIDENCE_AND_HONESTY.md).
 
 ## Features
 
 | Area | What it does |
 |---|---|
-| **System Health** | CPU %, memory (used / total / available), system-drive usage, uptime, OS, hostname, CPU model and core count, auto-refresh every 2 s, manual Refresh |
-| **System Status** | Rule-based findings (normal / info / warning / critical) with cautious wording |
-| **Process Analyzer** | Table of Process, PID, CPU, Memory, Status, Parent PID; search; sort by any column; top 5 CPU and top 5 memory; details panel (executable, user, threads, start time, session, window title, hosted services) |
-| **Storage Analyzer** | Pick any folder; total size, file and directory counts; largest sub-directories as bars; large-file finder (default 500 MB, adjustable); live progress; Stop button; access-denied handling |
-| **Report** | `Generate Report` writes a timestamped text report into `reports/` |
-| **Settings / About** | Refresh interval, large-file threshold, theme info; About dialog |
+| **Ask OScope** (opens first) | Pick a question: *Why is my PC slow? · Why is my RAM full? · Why is my laptop hot or loud? · Where did my storage go? · What changed recently? · Show me everything.* Choose what you mostly do (general, gaming, video editing, Photoshop/design, music/audio, rendering/3D); that only changes which evidence comes first, never a threshold. *Copy as text*, *Ask again*. |
+| **Overview** | CPU, memory, system drive, uptime, rule-based status, machine details, and **"What OScope can measure on this PC"**: every evidence source with its state, plus a *Details* window with the reason and source of each reading. Shows whether OScope runs as administrator. |
+| **Processes** | Processes **grouped by program** (Chrome = one row with its processes underneath; toggle to the flat list), search, sort, top 5 CPU and memory, details panel. Group memory is labelled a *working-set total* because shared memory can be counted more than once. |
+| **Storage** | Pick a folder (or Downloads, or the system drive). Interactive treemap where **area = size**, a synced **folder tree**, **search by name**, a **file-type legend that filters**, exact sizes, hidden items marked, **Show in File Explorer**, a **List** mode with sortable large files, Back / Esc / right-click navigation, a live progress bar showing the folder being read. |
+| **What the scan could not see** | Unreadable folders are marked *size unknown, not zero* and listed by path; links that were not followed are counted; cloud-only OneDrive files are reported separately (they take no space on this disk). A *Details* window explains how sizes are measured. |
+| **Compare scans** | Finished scans are remembered. Two scans of the same folder compare by file type and by folder, with a warning when they are not like-for-like (different amounts readable, one run as administrator). |
+| **History** | Optional, local only: about one row of numbers every 30 seconds, for "What changed recently?". On/off and *Clear history* in Settings. |
+| **Report** | `Generate Report` writes a text report with the evidence table and OScope's assessment. |
+| **`--probe`** | `python main.py --probe` prints what every collector reports on this machine (for checking and for bug reports). |
 
-Not included on purpose: process termination, file deletion, "optimizers", networking, database, cloud, AI features.
+Not included on purpose: process termination, file deletion or cleaning, "optimizers", registry cleaning, fan control,
+networking, accounts, cloud, AI services.
 
-## Technologies Used
+## What OScope can and cannot measure
 
-* **Python 3.11+** and **Tkinter** (GUI)
-* **psutil** (the only third-party package) for CPU %, process list and per-process data. See *Windows Implementation* for why, and for the Windows APIs it wraps.
-* Python standard library: `ctypes`, `winreg`, `subprocess`, `os.scandir`, `shutil`, `threading`, `queue`, `heapq`, `unittest`
-* Windows facilities: Win32 API, registry, `tasklist`
+| Reading | How | Reality on a typical Windows PC |
+|---|---|---|
+| CPU, memory, system-drive space, uptime, processes | psutil, Win32 | Always available |
+| Memory commitment (RAM + pagefile promised vs its limit) | `GetPerformanceInfo` | Available |
+| Paging activity (Pages/sec) | `typeperf` (performance counters) | Available on English Windows; counter names are language-specific |
+| Disk throughput (read / write per second) | psutil counters | Available; says *how much* data moves, not how busy the disk is or which program |
+| GPU load | `GPU Engine` performance counters (the figure Task Manager uses: the busiest engine) | Needs a modern GPU driver; per-process GPU is not shown |
+| Power source, battery, battery saver | `GetSystemPowerStatus` | Available (a desktop reports *no battery*) |
+| Windows power mode | `PowerGetEffectiveOverlayScheme` | Named only for recognised modes, otherwise *unavailable* |
+| Startup programs | Registry Run keys, Startup folders | Not a complete boot list (services and scheduled tasks are not included) |
+| **Temperature** | WMI ACPI thermal zones | Often **not exposed** or **needs administrator rights**; a zone is not necessarily the CPU |
+| **Fan speed** | WMI | **Not exposed**: Windows has no measured-speed property here, so OScope never shows an RPM |
 
-## System Architecture
+## Technologies
+
+* **Python 3.11+** and **Tkinter**; **psutil** (the only third-party package); SQLite from the standard library for history.
+* Standard library: `ctypes`, `winreg`, `subprocess` (read-only commands only), `os.scandir`, `sqlite3`, `threading`, `queue`.
+* Windows facilities: Win32 API, registry, performance counters (`typeperf`), WMI through PowerShell (`Get-CimInstance`), `tasklist`.
+
+## Architecture
 
 ```text
-┌──────────────────────────── GUI (Tkinter, main thread) ─────────────────────────────┐
-│  Header · Sidebar · Overview view · Processes view · Storage view · Dialogs         │
-└───────────────▲──────────────────────────────────────────────▲──────────────────────┘
-                │ results are posted through a thread-safe queue│
-        ┌───────┴──────────┐                            ┌───────┴─────────────┐
-        │ Sampler thread   │                            │ Scan / detail thread │
-        │ every N seconds  │                            │ (on demand)          │
-        └───────┬──────────┘                            └───────┬─────────────┘
-                ▼                                               ▼
-   resource_manager · process_manager · storage_manager · system_info · diagnostics
-                                     │
-                           windows_backend.py   ← the ONLY file with Windows-specific calls
-                                     │
-                 Win32 API · Registry · tasklist · psutil (wraps Win32)
+┌─────────────────────────────── GUI (Tkinter, main thread) ───────────────────────────────┐
+│ Ask OScope · Overview · Processes · Storage (tree + treemap + details) · Dialogs         │
+└──────▲───────────────────────────▲──────────────────────────────▲───────────────────────┘
+       │ questions                 │ results via a thread-safe queue│
+┌──────┴────────────┐   ┌──────────┴─────────┐          ┌──────────┴─────────┐
+│ analysis (pure)   │   │ Sampler thread     │          │ scan / search /    │
+│ questions, rules, │◄──┤ snapshot every 2 s │          │ history reads      │
+│ detectors, trends │   │ + ring buffer      │          │ (on demand)        │
+└──────▲────────────┘   └──────────┬─────────┘          └──────────┬─────────┘
+       │ facts                     ▼                               ▼
+       │            collectors (one per kind of evidence) ·  tree_scanner · history
+       │            each returns Readings with an honest Availability
+       │                           │                       (history thread = the only SQLite writer)
+       │                platform_ops · windows_backend  ← the only code that touches Windows directly
+       └────────── Win32 · registry · performance counters · WMI · psutil
 ```
 
-Key point: worker threads never touch widgets. They put results on a queue; the main thread drains the
-queue every 100 ms (`app/utils/background.py`). This is what keeps the window responsive.
+Layers, from the master design: UI → question → diagnostic orchestrator → evidence collectors → analysis → explanation → optional actions.
+Worker threads never touch widgets: results go on a queue that the main thread drains every 100 ms
+(`app/utils/background.py`). Slow Windows reads (PowerShell, `typeperf`) run on their own probe threads so sampling is never blocked.
 
-## Windows Implementation
+## Windows implementation
 
-| Information | Interface used |
+| Information | Interface |
 |---|---|
-| Physical memory total / available | `GlobalMemoryStatusEx` (kernel32) called directly through `ctypes` |
-| Uptime | `GetTickCount64` (kernel32) through `ctypes` |
-| Windows version / edition | Registry `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` plus `sys.getwindowsversion()` (build ≥ 22000 = Windows 11) |
-| CPU model | Registry `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString` |
-| CPU utilisation | `psutil.cpu_percent`, which reads system CPU times from Windows (busy time ÷ elapsed time between two readings) |
-| Process list, CPU %, memory | `psutil.process_iter`, which uses Windows process APIs (for example `NtQuerySystemInformation`, `GetProcessMemoryInfo`) |
-| Process session, window title, hosted services | `tasklist /V` and `tasklist /SVC`, run **once, on demand**, when you select a process; parsed by column position because header text is translated on non-English Windows |
-| System-drive usage | `shutil.disk_usage` → `GetDiskFreeSpaceExW` |
-| Folder scanning | `os.scandir` → `FindFirstFileW` / `FindNextFileW`; reparse points (junctions/symlinks) are skipped |
+| Physical memory, uptime | `GlobalMemoryStatusEx`, `GetTickCount64` (kernel32, `ctypes`) |
+| Commit charge and limit | `GetPerformanceInfo` (psapi) |
+| Power source / battery | `GetSystemPowerStatus` (kernel32) |
+| Power mode | `PowerGetEffectiveOverlayScheme` (powrprof) |
+| Windows version, CPU model | Registry `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion`, `...\CentralProcessor\0` |
+| Pages/sec, GPU engines | `typeperf` with `\Memory\Pages/sec` and `\GPU Engine(*)\Utilization Percentage` |
+| Temperature, fans | `Get-CimInstance` on `MSAcpi_ThermalZoneTemperature` and `Win32_Fan` (one PowerShell call, read-only) |
+| Startup programs | Registry `Run` keys, `StartupApproved` state, Startup folders |
+| Elevation | `IsUserAnAdmin` (shell32), display only |
+| Hidden / system / cloud-only files | File attributes from `os.scandir` |
+| Process list, CPU %, memory | `psutil` (wraps the Windows process APIs) |
+| Process session, window title, hosted services | `tasklist /V`, `/SVC`, once, on demand |
+| Folder scanning | `os.scandir` (`FindFirstFileW`); links are not followed |
 | Dark title bar, sharp text | `DwmSetWindowAttribute`, `SetProcessDpiAwareness` (cosmetic) |
 
-**Why psutil?** Reading per-process CPU % correctly needs the *change* in each process's CPU time between two
-readings and careful handling of processes that appear, vanish or deny access. psutil does this reliably.
-OScope still calls the Win32 API directly for memory and uptime, and uses the registry and `tasklist`
-directly, so the OS concepts stay visible in the code.
-
-**"Memory" for a process** is its *working set*: the physical RAM currently assigned to it (`rss` in psutil). Task Manager's default
-column shows a slightly different measure (private working set), so numbers can differ a little.
+**"Memory" for a process** is its working set (`rss` in psutil), which can differ a little from Task Manager's default column.
 
 ## Linux `/proc` (comparison only, not used in this edition)
 
-On Linux the kernel publishes live system state as files in `/proc`. A Linux edition of OScope would read:
-`/proc/meminfo` (memory), `/proc/cpuinfo` (CPU model), `/proc/uptime`, `/proc/stat` (CPU times), and
-`/proc/<PID>/status` and `/proc/<PID>/stat` (one process each). Every process has its own directory named
-by its PID. Nothing is stored; the kernel generates the text when you read it. The architecture already
-isolates OS-specific code in one module, so a Linux backend would sit next to `windows_backend.py`.
-
-## How Processes Are Identified
-
-A **process** is a running program with its own virtual address space and at least one thread.
-The OS gives each one a unique number, the **PID**, and records its **parent PID** (the process that
-started it). OScope lists every process it may see, identified by `(PID, name)`, and shows the parent PID so you
-can see who started what. PID 0 (System Idle Process) is hidden because its "CPU" figure is *idle* time, not work.
-Some system processes refuse to reveal their memory to a normal user; they are still listed and counted as "restricted".
+On Linux the kernel publishes live state as files: `/proc/meminfo`, `/proc/stat`, `/proc/<PID>/status`, and (where the kernel has it)
+pressure-stall information in `/proc/pressure/{cpu,memory,io}`; temperatures and fans appear under `/sys/class/hwmon` when a driver exposes them.
+OS-specific code is isolated in `platform_ops`, `windows_backend` and `app/collectors/windows/`, and collectors are chosen in one place
+(`app/collectors/registry.py`), so a Linux set of collectors could be added without touching analysis or the GUI. Not built.
 
 ## Installation
 
@@ -124,91 +143,76 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Running the Application
+## Running
 
 ```bat
-python main.py
+python main.py            :: the application
+python main.py --probe    :: print what every collector reports on this PC (no window)
 ```
 
-Run the automated tests:
+Tests (**417 automated tests**; GUI tests need a display, on Linux use `xvfb-run`):
 
 ```bat
 python -m unittest discover -s tests -v
 ```
 
-Developer switch: on a non-Windows machine, `OSCOPE_DEV=1 python main.py` starts the GUI for development.
-Windows-only fields (CPU model, Windows edition, `tasklist` extras) then show *Unavailable on this platform*.
+On a non-Windows machine, for development: `OSCOPE_DEV=1 python main.py`.
 
-## Project Structure
+## Where OScope keeps its data
+
+Everything stays on this PC, in `%LOCALAPPDATA%\OScope\` (override with the `OSCOPE_DATA_DIR` environment variable):
+
+| File | What |
+|---|---|
+| `settings.json` | refresh interval, large-file threshold, workload, history on/off |
+| `history.db` | optional history (SQLite): numbers, program names, folders you scanned; no command lines, window titles or file contents |
+| `reports\` | generated text reports |
+| `oscope.log` | OScope's own diagnostic log |
+
+Nothing is sent anywhere. OScope contains no network code.
+
+## Project structure
 
 ```text
 oscope/
-├── main.py                    entry point: OS check, dependency check, start GUI
-├── requirements.txt           psutil
-├── README.md  LICENSE
-├── PLAN.md                    build plan
-├── PROJECT_DOCUMENTATION.md   academic write-up
-├── TESTING.md                 test cases and results
-├── PANEL_QA.md                answers to likely panel questions
+├── main.py                     entry point (also --probe)
 ├── app/
-│   ├── core/
-│   │   ├── platform.py          detects the OS, unsupported message
-│   │   ├── windows_backend.py   ALL Windows-specific calls (Win32, registry, tasklist)
-│   │   ├── system_info.py       static facts: OS, hostname, CPU model, uptime
-│   │   ├── resource_manager.py  live CPU % and memory
-│   │   ├── process_manager.py   process list and per-process details
-│   │   ├── storage_manager.py   drive usage and read-only folder scanner
-│   │   ├── diagnostics.py       rule engine (thresholds come from constants.py)
-│   │   ├── sampler.py           background thread that collects snapshots
-│   │   └── report.py            text report builder and saver
-│   ├── gui/
-│   │   ├── main_window.py  overview_view.py  processes_view.py  storage_view.py
-│   │   ├── dialogs.py           Settings and About
-│   │   └── components.py        cards, progress bar, buttons, table helper, theme
-│   └── utils/
-│       ├── constants.py         colours, thresholds, defaults, messages
-│       ├── formatting.py        bytes, percent, duration, timestamps
-│       └── background.py        thread-safe hand-off to the GUI thread
-├── tests/                     test_core.py (no GUI) and test_gui.py
-└── reports/                   generated reports
+│   ├── collectors/             evidence: Availability/Reading types, registry of collectors, probe, labels
+│   │   └── windows/            memory, GPU, thermal/fan, power, startup, typeperf + PowerShell helpers
+│   ├── analysis/               pure explanation logic: facts, trends, detectors, rules, questions, workloads, orchestrator, grouping, wording
+│   ├── history/                SQLite: schema + migrations, recorder, writer thread, queries, storage snapshots and compare, settings
+│   ├── core/                   platform, platform_ops, windows_backend, system_info, process_manager, tree_scanner, tree_utils, sampler, report, diagnostics
+│   ├── gui/                    ask_view, overview, processes, storage (tree_panel, treemap, widgets), dialogs, components
+│   └── utils/                  constants, formatting, background runner, logging, file categories
+├── tests/                      unittest suite (see TESTING.md)
+├── docs/                       EVIDENCE_AND_HONESTY.md, WINDOWS_VERIFICATION.md
+└── PLAN.md  PROJECT_DOCUMENTATION.md  PROJECT_SUMMARY.md  PANEL_QA.md  TESTING.md
 ```
-
-## Demo (3–5 minutes)
-
-1. **Launch** `python main.py`. Point out CPU, Memory, Storage, Uptime and the status card.
-2. **Processes**: click the *Memory* header to sort. Explain PID, Process, CPU, Memory, Parent PID. Type `chrome` in Search.
-3. **Select a process**: show details. Select a `svchost.exe` to show *Hosted services* (from `tasklist /SVC`).
-4. **Storage**: click *Downloads* (or *Select Folder*). Show largest directories and large files; change the threshold to 100 MB.
-5. **Generate Report**: open the file in `reports/`.
-6. **Explain**: the OS-specific code is only in `windows_backend.py`; the GUI never blocks because scanning and sampling run on threads.
-
-## Screenshots
-
-*Add screenshots to `docs/screenshots/` after running on Windows*: System Health, Process Analyzer with details open, Storage Analyzer with results, a generated report.
 
 ## Limitations
 
 OScope:
 
-* is **not** a replacement for Task Manager, Resource Monitor or professional monitoring tools;
-* does **not** optimise, clean, or fix anything automatically;
-* does **not** guarantee it finds the root cause of a performance problem. A high reading says *that* a resource is busy, not *why*;
-* cannot read protected processes or files without the right permissions (it reports "Access denied" and continues);
-* depends on Windows-specific interfaces and on `psutil`;
-* CPU % is an average over the last refresh interval, so short spikes can be missed;
-* file sizes are logical sizes (what Explorer shows as "Size"), not disk allocation; cloud placeholder files (e.g. OneDrive) may count their full size;
-* the large-file list keeps the 200 biggest files found, and junctions/symlinks are not followed;
-* very long paths (over 260 characters) may be skipped unless Windows long-path support is enabled.
+* is **not** a replacement for Task Manager, Resource Monitor or professional hardware monitors;
+* does **not** optimise, clean or fix anything, and does not claim to find root causes: it shows evidence and relationships;
+* cannot read what Windows protects from the current user. It reports what it could not read and continues; it never bypasses Windows security;
+* shows temperature and fan speed **only if the PC's firmware exposes them** (often it does not);
+* measures disk *throughput*, not how busy the disk is, and cannot tell which program the traffic belongs to;
+* sizes are logical file sizes; disk usage can differ (cluster rounding, compression); hard links are counted once per name;
+* the treemap keeps the largest files of a very large folder and groups the rest as "(N smaller files)"; folder sizes are always exact;
+* cloud-only files are reported separately and are not counted as space on this disk (the attribute handling needs checking on a real OneDrive PC);
+* very long paths (over 260 characters) may be skipped unless Windows long-path support is enabled;
+* `typeperf` counter names are language-specific, so paging and GPU readings are *unavailable* on non-English Windows.
 
-## Future Improvements
+## Postponed (decided, not forgotten)
 
-Historical resource graphs · process-tree view · network monitoring · startup-application analysis ·
-configurable alerts · graphical disk map · export to CSV/PDF · a Linux backend · macOS support.
+Application footprint and residual-data detection after uninstall · cleanup (analysis only, never silent deletion) ·
+elevated scans · per-process GPU · detecting a Photoshop scratch drive · audio-latency diagnosis · services and scheduled-task startup analysis ·
+Linux collectors.
 
-## Academic Relevance
+## Academic relevance
 
-Built for *Windows & Linux Internals and Commands*. It demonstrates: process identification (PID / PPID);
-CPU utilisation as a rate; physical memory vs storage; working set vs private bytes; the Windows registry;
-the Win32 API through `ctypes`; command-line tools (`tasklist`) as an OS interface; file-system traversal,
-reparse points and access control (permission denied); and multi-threading with a safe hand-off to a GUI.
-See `PROJECT_DOCUMENTATION.md` and `PANEL_QA.md`.
+Built for *Windows & Linux Internals and Commands*. It demonstrates: process identification (PID/PPID) and grouping; CPU utilisation as a rate;
+physical memory vs commit charge vs paging; working set vs private bytes; the registry; Win32 through `ctypes`; performance counters and WMI;
+file-system traversal, attributes, reparse points and access control; sampling, trends and why a single instant misleads; and multi-threading with a safe
+hand-off to a GUI. See `PROJECT_DOCUMENTATION.md` and `PANEL_QA.md`.

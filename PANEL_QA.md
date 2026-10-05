@@ -31,8 +31,8 @@ Through `psutil.process_iter()`, which calls the Windows process APIs (for examp
 **change in a process's CPU time between two readings divided by the elapsed time**, divided by the number of logical CPUs.
 When you select a process, OScope also runs `tasklist /V` and `tasklist /SVC` for that one PID to get the session, window
 title and hosted services, on a background thread. I chose psutil because it handles processes that vanish or refuse access;
-the Windows-specific parts (registry, `GlobalMemoryStatusEx`, `tasklist`) are in one file, `windows_backend.py`, so they
-are visible and not hidden behind the library.
+the direct Windows calls (registry, `GlobalMemoryStatusEx`, `tasklist`, performance counters, WMI) live in `windows_backend.py` and
+`collectors/windows/`, so they are visible and not hidden behind the library.
 
 ### Q5. What is `/proc`?
 On Linux, `/proc` is a **pseudo file system**: it looks like a directory of files, but it is not on disk. The kernel
@@ -65,20 +65,22 @@ OScope raises a *warning* at 85% and *critical* at 95% (`constants.py`) and poin
 
 ### Q9. How does your application work differently on Windows and Linux?
 **This build targets Windows only**; on another OS it shows *"Unsupported operating system."* The design, however, isolates OS-specific
-code in `windows_backend.py`, and the GUI and analysis logic never touch OS interfaces directly.
+code in `platform_ops`, `windows_backend` and `collectors/windows` (a test enforces this), and the GUI and analysis logic never touch OS interfaces directly.
 * **Windows (implemented):** Win32 API through `ctypes` (memory, uptime), registry (version, CPU name), `tasklist`, and psutil, which uses Windows process APIs.
 * **Linux (design only):** `/proc/meminfo`, `/proc/cpuinfo`, `/proc/uptime`, `/proc/<PID>/stat|status`, `statvfs`.
-Adding Linux would mean writing a second backend with the same function names; the GUI would not change.
+Adding Linux would mean writing a second set of collectors (for example `/proc/pressure/*`, `/sys/class/hwmon`) chosen in `collectors/registry.py`; the analysis and the GUI would not change.
 
 ### Q10. Why did you choose Python?
 Fast to build and easy for a student to read; Tkinter ships with Python, so the GUI needs no extra install; the standard library covers
 threading, file traversal, the registry (`winreg`) and Win32 calls (`ctypes`); and one extra package (psutil) covers process data.
 The trade-off is that Python is not the lightest option; OScope is a diagnostic tool, not a real-time system, so that cost is acceptable.
 
-### Q11. Why didn't you use a database?
-There is nothing that needs to persist. Every value is a live reading, and reports are plain text files. A database would add
-installation, schema and maintenance work without any benefit. (A future *historical graphs* feature would be the point at which
-storing samples, for example in SQLite, would make sense.)
+### Q11. Why SQLite, and why only now?
+The first version had nothing to remember, so it used no database. "What changed recently?" and "Compare scans" need history: a
+measurement about every 30 seconds, the biggest programs, and summaries of folder scans. That is a good fit for SQLite: it is in Python's standard
+library (no new dependency), it is one local file, it supports the before/after queries directly, and retention is a simple `DELETE`.
+It stays on the user's PC (`%LOCALAPPDATA%\OScope\history.db`), stores only numbers, program names and folders the user chose to scan, can be turned off or cleared
+in Settings, and is written by a single thread so the window never waits on disk.
 
 ### Q12. Why didn't you implement process termination?
 It is outside the project's purpose and it is risky. Ending the wrong process can lose unsaved work or crash Windows, and a tool that

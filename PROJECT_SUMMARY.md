@@ -1,5 +1,12 @@
 # OScope — Project Summary
 
+> **Status note (current version).** This summary describes the earlier read-only analyzer and its treemap. The product has since become a
+> question-first, evidence-based tool: *Ask OScope*, per-program process grouping, honest availability for every reading, local history and
+> "What changed recently?", and a much stronger Storage view (folder tree synced with the treemap, search, file-type filter, notes on what a scan
+> could not see, and comparison between scans). **`README.md` is the current description**; `docs/EVIDENCE_AND_HONESTY.md` explains the rules the
+> explanations follow and `docs/WINDOWS_VERIFICATION.md` lists what still needs a run on real Windows.
+
+
 *A System Health and Resource Analyzer for Windows*
 
 > Source material for the project slide deck. Each feature below is written as
@@ -263,7 +270,7 @@ demo safely.
 **What it is:** Direct use of Windows-native interfaces: the Win32 API via
 `ctypes` for memory/uptime, the registry for OS version and CPU model, and
 `tasklist` for session/window-title/hosted-service information — all
-isolated in one module (`windows_backend.py`) so the rest of the app stays
+isolated in a small layer (`platform_ops`, `windows_backend` and `collectors/windows`) so the rest of the app stays
 OS-agnostic.
 
 **Problem it solves:** Demonstrates real operating-system interaction rather
@@ -271,7 +278,7 @@ than relying entirely on a third-party library — directly relevant to an OS
 internals course.
 
 **How to use it:** Invisible to the end user; visible in the codebase as the
-one place all Windows-specific calls live.
+small layer where the Windows-specific calls live.
 
 ---
 
@@ -284,7 +291,7 @@ Being transparent about scope matters for a project defense:
   operating system" message and exits cleanly rather than crashing. A Linux
   backend (reading `/proc/meminfo`, `/proc/cpuinfo`, `/proc/uptime`,
   `/proc/<PID>/status`) is architecturally straightforward to add later since
-  all OS-specific code is already isolated in one module, but it has not
+  all OS-specific code is already isolated in a small layer, but it has not
   been built.
 - **No "Open File" action** in the treemap by design (see 3.16) — only
   "Show in File Explorer" (select, don't execute).
@@ -296,7 +303,7 @@ Being transparent about scope matters for a project defense:
 
 ## 5. Engineering Quality
 
-- **70 automated tests** across core logic (scanning, diagnostics, reports,
+- **417 automated tests** across core logic (scanning, diagnostics, reports,
   Windows backend parsing), the treemap layout algorithm (area conservation,
   no overlaps, correct proportions), and full GUI interaction tests (search,
   sort, click-to-select, double-click-to-zoom, breadcrumb navigation) — all
@@ -343,6 +350,6 @@ A straightforward mapping of the sections above onto a deck:
 11. **Reports & Refresh** (§3.13–3.14)
 12. **Reliability & Safety** (§3.15–3.16) — error handling + read-only guarantee
 13. **Under the Hood** (§3.17, §6) — Windows APIs used, tech stack
-14. **Testing** (§5) — 70 tests, the real bug found and fixed
+14. **Testing** (§5) — 417 tests, the real bugs found and fixed
 15. **Limitations & Future Work** (§4) — Linux support, honesty about scope
 16. **Demo / Closing slide**

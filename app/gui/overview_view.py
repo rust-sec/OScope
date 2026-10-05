@@ -6,8 +6,10 @@ import tkinter as tk
 from datetime import datetime, timedelta
 from typing import Optional
 
+from app.collectors import labels
 from app.core.sampler import Snapshot
 from app.core.system_info import StaticInfo
+from app.gui.dialogs import show_evidence_details
 from app.gui.components import Card, MetricCard, font, section_title, usage_color
 from app.utils.constants import COLORS, LEVEL_COLORS, UNAVAILABLE
 from app.utils.formatting import (
@@ -19,16 +21,20 @@ from app.utils.formatting import (
 
 
 class OverviewView(tk.Frame):
-    """Four metric cards, a system-status card and a machine-details card."""
+    """Four metric cards, a system-status card, a machine-details card and the evidence sources."""
 
     def __init__(self, parent: tk.Misc, info: StaticInfo) -> None:
         super().__init__(parent, bg=COLORS["bg"])
         self._info = info
         self._findings_key: Optional[tuple] = None
+        self.evidence_values: dict[str, tk.Label] = {}  # reading name -> label showing its value or its status
+        self._evidence_text: dict[str, str] = {}
+        self.privilege_label: Optional[tk.Label] = None
 
         for column in range(4):
             self.columnconfigure(column, weight=1, uniform="metric")
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(1, weight=1, minsize=232)  # the status cards keep room even when the window is short
+        self._readings: dict = {}
 
         self.cpu_card = MetricCard(self, "CPU")
         self.memory_card = MetricCard(self, "Memory")
@@ -51,6 +57,21 @@ class OverviewView(tk.Frame):
         section_title(self.details_card.body, "This computer").pack(fill="x")
         self._build_details()
 
+        # -- Evidence sources ------------------------------------------------------
+        self.evidence_card = Card(self)
+        self.evidence_card.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(16, 0))
+        header = tk.Frame(self.evidence_card.body, bg=COLORS["card"])
+        header.pack(fill="x")
+        section_title(header, "What OScope can measure on this PC").pack(side="left")
+        details_link = tk.Label(
+            header, text="Details…", bg=COLORS["card"], fg=COLORS["accent"], font=font(9, "bold"), cursor="hand2"
+        )
+        details_link.pack(side="right")
+        details_link.bind("<Button-1>", lambda _e: self.show_evidence_details())
+        self.privilege_label = tk.Label(header, text="", bg=COLORS["card"], fg=COLORS["text_dim"], font=font(9))
+        self.privilege_label.pack(side="right", padx=(0, 14))
+        self._build_evidence()
+
     # -- construction helpers ---------------------------------------------------
     def _build_details(self) -> None:
         info = self._info
@@ -71,13 +92,45 @@ class OverviewView(tk.Frame):
         grid.columnconfigure(1, weight=1)
         for row, (label, value) in enumerate(rows):
             tk.Label(grid, text=label, bg=COLORS["card"], fg=COLORS["text_dim"], font=font(10), anchor="w").grid(
-                row=row, column=0, sticky="nw", pady=5, padx=(0, 16)
+                row=row, column=0, sticky="nw", pady=4, padx=(0, 16)
             )
             value_label = tk.Label(
                 grid, text=value, bg=COLORS["card"], fg=COLORS["text"], font=font(10), anchor="w", justify="left"
             )
-            value_label.grid(row=row, column=1, sticky="nw", pady=5)
+            value_label.grid(row=row, column=1, sticky="nw", pady=4)
         grid.bind("<Configure>", lambda e, g=grid: self._wrap_details(g, e.width))
+
+    def _build_evidence(self) -> None:
+        """One cell per reading: its name, and below it the value or the honest reason there is none."""
+        grid = tk.Frame(self.evidence_card.body, bg=COLORS["card"])
+        grid.pack(fill="x", pady=(6, 0))
+        columns = 4
+        for column in range(columns):
+            grid.columnconfigure(column, weight=1, uniform="evidence")
+        for index, (name, title) in enumerate(labels.EVIDENCE_ROWS):
+            cell = tk.Frame(grid, bg=COLORS["card"])
+            cell.grid(row=index // columns, column=index % columns, sticky="nw", padx=(0, 12), pady=(0, 6))
+            tk.Label(cell, text=title, bg=COLORS["card"], fg=COLORS["text_dim"], font=font(9), anchor="w").pack(fill="x")
+            value = tk.Label(
+                cell, text="Checking...", bg=COLORS["card"], fg=COLORS["text_dim"], font=font(10),
+                anchor="w", justify="left", wraplength=220,
+            )
+            value.pack(fill="x")
+            self.evidence_values[name] = value
+
+    def show_evidence_details(self) -> tk.Toplevel:
+        """Open the dialog explaining each reading's state, reason and source."""
+        return show_evidence_details(self.winfo_toplevel(), self._readings)
+
+    def _render_evidence(self, snap: Snapshot) -> None:
+        self._readings = snap.readings
+        for name, widget in self.evidence_values.items():
+            value, status = labels.describe(snap.readings, name)
+            text = value or status  # a gap shows only its state here; the reason is in "Details"
+            if self._evidence_text.get(name) == text:
+                continue  # unchanged: skip the redraw
+            self._evidence_text[name] = text
+            widget.configure(text=text, fg=COLORS["text"] if value else COLORS["text_dim"])
 
     @staticmethod
     def _wrap_details(grid: tk.Frame, width: int) -> None:
@@ -145,6 +198,13 @@ class OverviewView(tk.Frame):
             self.uptime_card.set(UNAVAILABLE)
 
         self._render_findings(snap.findings)
+        self._render_evidence(snap)
+        if self.privilege_label is not None:
+            self.privilege_label.configure(
+                text={True: "Running as administrator", False: "Standard user: some readings may be restricted"}.get(
+                    snap.elevated, ""
+                )
+            )
 
     def _cpu_subtitle(self) -> str:
         info = self._info

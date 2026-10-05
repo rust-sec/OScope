@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import tkinter as tk
 from tkinter import messagebox
 from typing import Optional
 
 from app.core import platform as oscope_platform
-from app.core import report, windows_backend
+from app.core import platform_ops, report, windows_backend
 from app.core.sampler import Sampler, Snapshot
 from app.core.system_info import get_static_info
 from app.gui.components import FlatButton, apply_theme, font
+from app.gui.ask_view import AskView
 from app.gui.dialogs import AppSettings, show_about, show_settings
+from app.history.service import HistoryService
+from app.history.settings_store import SettingsStore
 from app.gui.overview_view import OverviewView
 from app.gui.processes_view import ProcessesView
 from app.gui.storage_view import StorageView
@@ -21,6 +23,7 @@ from app.utils.constants import APP_NAME, APP_SUBTITLE, COLORS
 from app.utils.formatting import format_clock
 
 _NAV_ITEMS = [
+    ("ask", "◎   Ask OScope"),
     ("overview", "▣   Overview"),
     ("processes", "▤   Processes"),
     ("storage", "▰   Storage"),
@@ -32,7 +35,9 @@ class MainWindow:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.settings = AppSettings()
+        self.settings_store = SettingsStore.default()
+        self.settings = self.settings_store.load()
+        self.history = HistoryService.default(self.settings.history_enabled)
         self.runner = BackgroundRunner(root)
         self.info = get_static_info()
         self.latest: Optional[Snapshot] = None
@@ -45,7 +50,8 @@ class MainWindow:
         self._build_header()
         self._build_sidebar()
         self._build_content()
-        self.show_view("overview")  # the app always opens on System Health
+        self.storage.set_threshold(self.settings.large_file_mb)  # restore the saved threshold
+        self.show_view("ask")  # the app opens on the question-first screen
 
         root.bind("<F5>", lambda _e: self.refresh_now())
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -146,10 +152,25 @@ class MainWindow:
         self.content.columnconfigure(0, weight=1)
         self.content.rowconfigure(0, weight=1)
 
+        self.ask = AskView(
+            self.content,
+            self.runner,
+            get_context=lambda: (self.latest, self.sampler.recent_samples()),
+            navigate=self.show_view,
+            workload=self.settings.workload,
+            on_workload_change=self._on_workload_change,
+            get_history=self.history.context,
+            on_answer=self.history.record_result,
+        )
         self.overview = OverviewView(self.content, self.info)
         self.processes = ProcessesView(self.content, self.runner, self.refresh_now)
-        self.storage = StorageView(self.content, self.runner)
-        self._views = {"overview": self.overview, "processes": self.processes, "storage": self.storage}
+        self.storage = StorageView(self.content, self.runner, self.history)
+        self._views = {
+            "ask": self.ask,
+            "overview": self.overview,
+            "processes": self.processes,
+            "storage": self.storage,
+        }
         for view in self._views.values():
             view.grid(row=0, column=0, sticky="nsew")
 
@@ -171,17 +192,24 @@ class MainWindow:
 
     def _on_snapshot(self, snap: Snapshot) -> None:
         self.latest = snap
+        self.history.on_snapshot(snap)
         self.updated_label.configure(text=f"Last updated: {format_clock(snap.taken_at)}")
         self.overview.update_snapshot(snap)
         self.processes.update_snapshot(snap)
 
     # ------------------------------------------------------------------------ dialogs
     def open_settings(self) -> None:
-        show_settings(self.root, self.settings, self._apply_settings)
+        show_settings(self.root, self.settings, self._apply_settings, self.history)
+
+    def _on_workload_change(self, workload: str) -> None:
+        self.settings.workload = workload
+        self.settings_store.save(self.settings)
 
     def _apply_settings(self, settings: AppSettings) -> None:
         self.sampler.set_interval(settings.refresh_interval)
         self.storage.set_threshold(settings.large_file_mb)
+        self.history.set_enabled(settings.history_enabled)
+        self.settings_store.save(settings)
 
     # ------------------------------------------------------------------------ report
     def generate_report(self) -> None:
@@ -190,7 +218,8 @@ class MainWindow:
             return
         try:
             text = report.build_report(
-                self.info, self.latest, self.storage.last_result, self.storage.threshold_mb
+                self.info, self.latest, self.storage.last_result, self.storage.threshold_mb,
+                window=self.sampler.recent_samples(), workload=self.settings.workload,
             )
             path = report.save_report(text)
         except Exception:  # noqa: BLE001 - never show a traceback to the user
@@ -201,17 +230,13 @@ class MainWindow:
         if messagebox.askyesno(
             APP_NAME, f"Report saved to:\n{path}\n\nOpen the reports folder?", parent=self.root
         ):
-            opener = getattr(os, "startfile", None)  # Windows only
-            if opener is not None:
-                try:
-                    opener(str(path.parent))
-                except OSError:
-                    pass
+            platform_ops.open_path(str(path.parent))  # Windows only; no-op elsewhere
 
     # ------------------------------------------------------------------------ shutdown
     def _on_close(self) -> None:
         self.sampler.stop()
         self.storage.cancel_running_scan()
+        self.history.close()
         self.runner.close()
         self.root.destroy()
 

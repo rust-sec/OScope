@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
-from app.core import diagnostics
-from app.core.sampler import Snapshot
+from app.analysis import explain, workloads
+from app.analysis.orchestrator import run_question
+from app.collectors import labels
+from app.core import diagnostics, platform_ops
+from app.core.sampler import SampleRecord, Snapshot
 from app.core.storage_manager import ScanResult
 from app.core.system_info import StaticInfo
 from app.utils.constants import ACCESS_DENIED_MESSAGE, TOP_PROCESSES_SHOWN, UNAVAILABLE
@@ -24,8 +27,16 @@ _WIDTH = 50
 _HEAVY = "=" * _WIDTH
 _LIGHT = "-" * _WIDTH
 
-# reports/ sits next to main.py:  <project>/app/core/report.py -> parents[2] == <project>
-REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
+# None means "use the default": <app data folder>/reports, or <project>/reports when there is no
+# app-data folder. Set it to a Path (tests do) to force a location.
+REPORTS_DIR: Optional[Path] = None
+_PROJECT_REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"  # <project>/app/core/report.py -> <project>
+
+
+def default_reports_dir() -> Path:
+    """Where reports go unless told otherwise: the per-user app-data folder (works when installed too)."""
+    data_dir = platform_ops.app_data_dir()
+    return data_dir / "reports" if data_dir is not None else _PROJECT_REPORTS_DIR
 
 
 def _section(title: str) -> list[str]:
@@ -38,6 +49,8 @@ def build_report(
     scan: Optional[ScanResult] = None,
     large_file_threshold_mb: int = 500,
     now: Optional[datetime] = None,
+    window: Optional[Sequence[SampleRecord]] = None,
+    workload: str = workloads.DEFAULT_WORKLOAD,
 ) -> str:
     """Assemble the report text from data already collected (no new system reads)."""
     now = now or datetime.now()
@@ -122,6 +135,13 @@ def build_report(
         else:
             lines.append("  No files above the selected size threshold were found.")
 
+    lines += _section("EVIDENCE SOURCES")
+    lines += labels.evidence_report(snapshot.readings).splitlines()
+
+    lines += _section("OSCOPE'S ASSESSMENT")
+    assessment = run_question("everything", snapshot, window or [], workload)
+    lines += explain.result_to_text(assessment).splitlines()
+
     lines += _section("DIAGNOSTIC SUMMARY")
     lines += diagnostics.summary_lines(snapshot.findings)
 
@@ -130,13 +150,14 @@ def build_report(
 
 
 def save_report(text: str, reports_dir: Optional[Path] = None, now: Optional[datetime] = None) -> Path:
-    """Write the report to ``reports/oscope_report_<timestamp>.txt`` and return its path.
+    """Write the report to ``<reports folder>/oscope_report_<timestamp>.txt`` and return its path.
 
-    If the reports folder is not writable, falls back to ``~/OScope Reports``.
+    The folder is ``reports_dir`` if given, else ``REPORTS_DIR``, else the per-user
+    app-data folder. If it is not writable, falls back to ``~/OScope Reports``.
     """
     now = now or datetime.now()
     filename = f"oscope_report_{format_file_stamp(now)}.txt"
-    primary = reports_dir or REPORTS_DIR
+    primary = reports_dir or REPORTS_DIR or default_reports_dir()
     try:
         primary.mkdir(parents=True, exist_ok=True)
         target = primary / filename

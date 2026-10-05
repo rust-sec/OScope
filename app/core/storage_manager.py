@@ -14,9 +14,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from app.core.platform_ops import is_reparse_point, system_drive_path  # noqa: F401 - system_drive_path re-exported
 from app.utils.constants import MAX_LARGE_FILES_KEPT
-
-_FILE_ATTRIBUTE_REPARSE_POINT = 0x400  # Windows junctions / symlinks carry this flag
 
 
 # --------------------------------------------------------------------------- #
@@ -29,13 +28,6 @@ class StorageInfo:
     used: int
     free: int
     percent: float
-
-
-def system_drive_path() -> str:
-    """``C:\\`` on Windows (from the SystemDrive variable), ``/`` elsewhere (dev mode)."""
-    if os.name == "nt":
-        return os.environ.get("SystemDrive", "C:").rstrip("\\/") + "\\"
-    return os.path.abspath(os.sep)
 
 
 def get_drive_usage(path: Optional[str] = None) -> Optional[StorageInfo]:
@@ -210,8 +202,7 @@ class DirectoryScanner:
         """True for a normal directory; False for files, symlinks and Windows junctions."""
         if not entry.is_dir(follow_symlinks=False):
             return False
-        attributes = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
-        return not (attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+        return not is_reparse_point(entry)
 
     def _record_file(self, entry: "os.DirEntry[str]") -> int:
         size = entry.stat(follow_symlinks=False).st_size

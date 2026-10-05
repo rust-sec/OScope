@@ -95,6 +95,15 @@ def apply_theme(root: tk.Misc) -> None:
         selectbackground=[("readonly", COLORS["bg_alt"])],
         selectforeground=[("readonly", COLORS["text"])],
     )
+    style.configure(
+        "Oscope.Horizontal.TProgressbar",
+        troughcolor=COLORS["track"],
+        background=COLORS["accent"],
+        bordercolor=COLORS["track"],
+        lightcolor=COLORS["accent"],
+        darkcolor=COLORS["accent"],
+        thickness=6,
+    )
     root.option_add("*TCombobox*Listbox.background", COLORS["bg_alt"])
     root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
     root.option_add("*TCombobox*Listbox.selectBackground", COLORS["select"])
@@ -197,6 +206,52 @@ class FlatButton(tk.Label):
     def set_text(self, text: str) -> None:
         self.configure(text=text)
 
+    def set_toggled(self, on: bool) -> None:
+        """Show this button as the active choice of a pair (raised card) or the inactive one (flat)."""
+        self._normal = COLORS["card"] if on else COLORS["bg"]
+        self.configure(bg=self._normal)
+
+
+class ScrollableFrame(tk.Frame):
+    """A vertically scrolling area. Put content in ``frame.body``; the mouse wheel works over it."""
+
+    def __init__(self, parent: tk.Misc, bg: str = COLORS["bg"]) -> None:
+        super().__init__(parent, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.scrollbar = ttk.Scrollbar(
+            self, orient="vertical", command=self.canvas.yview, style="Oscope.Vertical.TScrollbar"
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self.canvas, bg=bg)
+        self._window = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._window, width=e.width))
+        for widget in (self.canvas, self.body):
+            widget.bind("<Enter>", self._bind_wheel)
+            widget.bind("<Leave>", self._unbind_wheel)
+
+    @property
+    def width(self) -> int:
+        return self.canvas.winfo_width()
+
+    def scroll_to_top(self) -> None:
+        self.canvas.yview_moveto(0)
+
+    def _bind_wheel(self, _event: object) -> None:
+        self.canvas.bind_all("<MouseWheel>", self._on_wheel)                      # Windows / macOS
+        self.canvas.bind_all("<Button-4>", lambda _e: self.canvas.yview_scroll(-3, "units"))  # Linux
+        self.canvas.bind_all("<Button-5>", lambda _e: self.canvas.yview_scroll(3, "units"))
+
+    def _unbind_wheel(self, _event: object) -> None:
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.canvas.unbind_all(sequence)
+
+    def _on_wheel(self, event: tk.Event) -> None:
+        if self.body.winfo_height() > self.canvas.winfo_height():  # nothing to scroll otherwise
+            self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units" if abs(event.delta) < 120 else "pages")
+
 
 class MetricCard(Card):
     """Title, big value, sub-line and optional progress bar (used on the Overview)."""
@@ -253,17 +308,21 @@ class BarList(tk.Frame):
             ).grid(row=row, column=2, sticky="e")
 
 
-def make_table(parent: tk.Misc, columns: Sequence[tuple[str, str, int, str]], height: int = 12):
+def make_table(
+    parent: tk.Misc, columns: Sequence[tuple[str, str, int, str]], height: int = 12, expandable: bool = False
+):
     """Create a styled table with a scrollbar.
 
-    ``columns`` = ``(column_id, heading, width_px, anchor)``.
+    ``columns`` = ``(column_id, heading, width_px, anchor)``. With ``expandable`` the table
+    also has a narrow tree column holding the expand/collapse arrows (rows may have children);
+    callers can switch it off again with ``tree.configure(show="headings")``.
     Returns ``(container_frame, treeview)``.
     """
     container = tk.Frame(parent, bg=COLORS["card"])
     tree = ttk.Treeview(
         container,
         columns=[col[0] for col in columns],
-        show="headings",
+        show="tree headings" if expandable else "headings",
         selectmode="browse",
         height=height,
         style="Oscope.Treeview",
@@ -271,6 +330,9 @@ def make_table(parent: tk.Misc, columns: Sequence[tuple[str, str, int, str]], he
     for column_id, heading, width, anchor in columns:
         tree.heading(column_id, text=heading, anchor=anchor if anchor != "w" else "w")
         tree.column(column_id, width=width, minwidth=120 if column_id == columns[0][0] else 55, anchor=anchor, stretch=True)
+    if expandable:
+        tree.heading("#0", text="")
+        tree.column("#0", width=30, minwidth=30, stretch=False)
     scrollbar = ttk.Scrollbar(container, orient="vertical", command=tree.yview, style="Oscope.Vertical.TScrollbar")
     tree.configure(yscrollcommand=scrollbar.set)
     tree.pack(side="left", fill="both", expand=True)
