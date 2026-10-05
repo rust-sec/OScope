@@ -6,23 +6,37 @@
 python -m unittest discover -s tests -v
 ```
 
-* `tests/test_core.py`: 36 tests, no window needed.
-* `tests/test_gui.py`: 8 tests that open the real window briefly (skipped automatically if no display).
+On Linux (development): `OSCOPE_DEV=1 xvfb-run -a python3 -m unittest discover -s tests` (the GUI tests need a display; without one they are skipped).
+
+The suite has **417 automated tests**:
+
+| File | Covers |
+|---|---|
+| `tests/test_core.py` | formatting, diagnostics rules, platform, system info, processes, folder scanners, file categories, Windows backend parsing, entry point, report |
+| `tests/test_foundation.py` | `Reading` rules, platform facade, settings, logging, sampler wiring, OS-isolation guard |
+| `tests/test_collectors.py` | typeperf / PowerShell / registry parsing, availability mapping for every collector, background probes, `--probe`, process grouping, labels |
+| `tests/test_analysis.py` | trends, detectors, every relationship rule (positive and negative), questions, workloads, the causal-wording guard, report integration |
+| `tests/test_history.py` | database, migrations (including v1 to v2 upgrade), corrupt/locked files, recorder, writer thread, retention, queries, service, change detection, storage snapshots and compare |
+| `tests/test_storage.py` | scanner: roll-ups, folding, hidden, cloud-only, denied, links, cancel, progress; tree helpers |
+| `tests/test_treemap_layout.py` | squarified treemap layout |
+| `tests/test_gui.py`, `tests/test_storage_gui.py` | the real window under a virtual display: Ask OScope, Overview, Processes (grouped and flat), Settings, history, Storage (tree/treemap/details sync, search, filter, navigation, progress, notes, compare) |
+| `tests/test_docs_and_safety.py` | read-only guarantee, no network code, the one PowerShell script only reads, documented test count, no stale claims |
 
 ## Status vocabulary (read this first)
 
-The project was **built and tested on macOS**, where Windows-only calls (registry, `GlobalMemoryStatusEx`,
-`tasklist`) cannot run. So results are recorded honestly in two kinds:
+The current version was **built and tested on Linux**, where Windows-only calls (registry, `GlobalMemoryStatusEx`, performance counters, WMI,
+power API, `tasklist`) cannot run. Results are therefore recorded in two kinds:
 
 | Status | Meaning |
 |---|---|
-| **Pass (automated, macOS dev run 2026-09-29)** | The automated test passed on the development machine. The OS-independent logic is confirmed. |
-| **Pending: run on Windows** | Needs a real Windows 10/11 machine. The *Actual Result* cell is left for you to fill in when you run it. |
+| **Pass (automated, Linux dev run)** | The automated test passed on the development machine. The OS-independent logic, the parsers (against hand-written samples) and the availability rules are confirmed. |
+| **Pending: run on Windows** | Needs a real Windows 10/11 machine. The *Actual Result* cell is left for you to fill in. |
 
-Some cases have both: the logic passed in the automated run, and the live Windows behaviour is pending.
-Run the automated suite on Windows first: it should report `OK` (44 tests). Then walk through the manual cases.
+Run the automated suite on Windows first: it should report `OK` (417 tests; a few Windows-only tests are skipped elsewhere and run there).
+Then walk through the manual cases below and `docs/WINDOWS_VERIFICATION.md` (one line per reading, with the command to capture real output: `python main.py --probe`).
 
-Automated run recorded: **44 tests, 0 failures, macOS 27, Python 3.12, Tk 9.0, 2026-09-29.**
+The older cases below (T01 to T20) were recorded for the first version on macOS (2026-09-29) and are kept as the manual script; the automated tests behind them
+have since been extended, not removed.
 
 ---
 
@@ -58,3 +72,28 @@ Automated run recorded: **44 tests, 0 failures, macOS 27, Python 3.12, Tk 9.0, 2
 | `test_only_n_largest_files_kept` | Used `heapq.heappushreplace`, which does not exist, so scanning crashed once more than 200 files had been seen | Use `heapq.heapreplace` |
 | `test_memorystatusex_matches_win32_size` | `c_ulong` is 4 bytes on Windows but 8 on 64-bit Unix, so the `MEMORYSTATUSEX` structure size differed | Use fixed-size `c_uint32` for the two DWORD fields |
 | Layout measurement | Card sub-text and process-details panel requested more space than available at default window size | Wrapped sub-text, compact one-line detail rows, shrinkable table columns, window clamped to screen size |
+
+
+## Added since the first version (see `docs/WINDOWS_VERIFICATION.md` for the Windows steps)
+
+| Area | Automated here | Pending: run on Windows |
+|---|---|---|
+| Evidence readings (memory commitment, paging, GPU, thermal, fan, power, startup, elevation) | parsers and availability rules for every collector; "never a value unless measured" matrix | real outputs on a real PC; `--probe` standard vs administrator |
+| Question-based answers | every question x every workload on synthetic machines; relationship rules positive and negative; causal-wording guard | read a few real answers for sense |
+| Process grouping | grouping, restricted counts, aliases, GUI | Chrome/Edge on a real PC |
+| History | schema, migrations, corrupt/locked files, writer thread, retention, queries | run for ~10 minutes, then *What changed recently?* |
+| Storage | roll-ups, folding, denied/links/cloud/hidden (injected), tree/treemap sync, search, filter, compare | OneDrive placeholders, real ACL denials, junctions, High-DPI, `C:\` scan |
+
+## Bugs found and fixed while building the current version
+
+| Found by | Problem | Fix |
+|---|---|---|
+| New scanner test | The trailing partial batch of files in a folder was never trimmed, so a folder could keep more than its limit and fold the wrong files | Trim in `_finish_frame` |
+| New scanner test | Symlinks were silently ignored (neither folder nor file) | Every symlink is counted and listed |
+| New scanner test | Files inside a hidden folder were not counted as hidden | Hidden context is inherited |
+| Reviewing `open_or_recreate` | Any `DatabaseError` (including "database is locked") would have moved a healthy history file aside as "corrupt" | Only real corruption recreates; locked/unopenable is re-raised; regression test |
+| History tests | `context()` could read before the writer had opened the database | It waits for the writer to be ready first |
+| Storage GUI test | Tk delivers selection events later, so a flag held during the call was already cleared and the echo could undo a quick double-click zoom | Swallow exactly the echoed selection |
+| Screenshots | The new evidence card squeezed the status cards to nothing; the detail panel hid the *Show in File Explorer* button on 768-pixel screens | Compact card, minimum row height, compact detail panel |
+| Storage GUI tests | A late background result could touch a destroyed widget; the progress bar kept animating; `BackgroundRunner.close()` left its timer pending | Guards, `destroy()` override, timer cancelled |
+| Wording guard | A sentence used "because" while describing Windows caching | Reworded; the guard now covers every sentence of every answer |

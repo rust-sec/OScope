@@ -14,7 +14,7 @@ Principle: **Observe -> Analyze -> Explain.** Read-only. No kill / delete / opti
 |---|---|---|
 | Entry | `main.py` | OS check, dependency check, start GUI, never show a traceback |
 | Platform | `core/platform.py` | Detect OS, supported/unsupported message |
-| Windows-only code | `core/windows_backend.py` | ALL Win32 / registry / `tasklist` calls, each guarded, each returns `None` if unavailable |
+| Windows-only code | `core/platform_ops.py`, `core/windows_backend.py`, `collectors/windows/*` | Direct Win32 / registry / `tasklist` / counter / WMI access, each guarded, each returns an honest "unavailable" (see the 2026 evolution below) |
 | Data | `system_info.py`, `resource_manager.py`, `process_manager.py`, `storage_manager.py` | Static info, CPU/RAM sampling, process list + details, drive usage + folder scanner |
 | Analysis | `diagnostics.py`, `report.py` | Rule engine (thresholds from `constants.py`), text report |
 | Concurrency | `core/sampler.py`, `utils/background.py` | Background sampling thread; thread-safe hand-off to the Tk main thread |
@@ -44,3 +44,15 @@ Principle: **Observe -> Analyze -> Explain.** Read-only. No kill / delete / opti
 5. main.py
 6. Docs: README, PROJECT_DOCUMENTATION, TESTING, PANEL_QA, LICENSE
 7. Self-review against the 15-point checklist; fix; report what could NOT be verified here
+
+## 2026 evolution (question-first, evidence-based)
+
+The original build was a read-only system monitor with a storage treemap. The current direction is an *explainable system-intelligence tool*:
+**What is happening? What is contributing? What might you not have noticed? What could you consider?** Decisions taken with the project owner:
+
+* Windows only this semester; Tkinter stays; evidence before action; no deletion code (cleanup, if ever added, is analysis only).
+* Phases delivered: (1) foundation: collectors base, platform facade, settings, logging; (2) evidence collectors and per-program process grouping;
+  (3) question-based diagnostics (detectors, relationship rules, workloads, wording guard); (4) local history in SQLite and "What changed recently?";
+  (5) storage upgrades: tree + treemap sync, search, filter, honest scan notes, snapshot compare; (8-lite) docs and guard tests.
+* Postponed: application footprint / residual detection, cleanup analysis, elevated scans, per-process GPU, Photoshop scratch detection, audio-latency diagnosis, Linux collectors.
+* What is verified where: see `README.md` ("Verification note") and `docs/WINDOWS_VERIFICATION.md`.

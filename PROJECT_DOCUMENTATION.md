@@ -36,37 +36,44 @@ answers three questions: *Is something wrong? Which process is involved? Where d
 
 ## 5. Proposed Solution
 
-Three views, one refresh engine.
+Four views, one refresh engine, and a question-first front door (see `README.md` for the full feature list).
 
-* **System Health**: metric cards, a status card, and machine details.
-* **Process Analyzer**: searchable, sortable process table with a details panel and top-5 lists.
-* **Storage Analyzer**: recursive, cancellable folder scan that reports sizes, largest directories and large files.
+* **Ask OScope**: the user picks a question (*Why is my PC slow? Why is my RAM full? Why is my laptop hot or loud? Where did my storage go? What changed recently? Show me everything.*). The answer has four layers: what is happening, what is contributing, what the user may not have noticed, what they could consider. Every statement says whether it was **measured**, **seen together** with something else, or **could not be verified**.
+* **System Health**: metric cards, a status card, machine details, and the state of every evidence source with its reason.
+* **Process Analyzer**: processes grouped by program (Chrome = one row), searchable, sortable, with a details panel and top-5 lists.
+* **Storage Analyzer**: cancellable scan with an interactive treemap (area = size), a synced folder tree, search, a file-type filter, notes on what could not be seen (unreadable folders, links, cloud-only files) and comparison between scans.
 
-A background thread samples the system every 2 seconds (configurable). A rule engine converts the numbers
-into findings. A report generator saves everything as text. The guiding principle is **Observe → Analyze → Explain**.
+A background thread samples the system every 2 seconds (configurable) into a short window, so "high" means *sustained*. Collectors read one kind of
+evidence each and report an honest availability. Detectors and rules turn the evidence into findings. An optional local history (SQLite) answers
+"What changed recently?". A report generator saves everything as text. The guiding principle is **Observe → Analyze → Explain**, with evidence before action.
 
 ## 6. System Architecture
 
 ```text
-GUI layer (Tkinter)         main_window · overview_view · processes_view · storage_view · dialogs · components
+GUI layer (Tkinter)         main_window · ask_view · overview_view · processes_view · storage_view (tree_panel, treemap) · dialogs
         ▲  queue (thread-safe hand-off, polled every 100 ms)
-Thread layer                sampler (periodic)  ·  scan thread (on demand)  ·  detail lookup (on demand)
+Thread layer                sampler (periodic) · probe threads (typeperf, PowerShell) · scan / search / history reads (on demand) · history writer
         ▼
-Data layer                  system_info · resource_manager · process_manager · storage_manager
-Analysis layer              diagnostics (rules) · report (text output)
-OS-specific layer           windows_backend  →  Win32 API · Registry · tasklist   (+ psutil)
-Utilities                   constants (thresholds, colours) · formatting · background
+Analysis layer (pure)       questions · detectors · relationship rules · trends · workloads · grouping · explain (wording rules)
+Evidence layer              collectors/* : each returns Readings with an Availability (Available / Unavailable / Permission restricted / Not exposed / Not supported)
+Data layer                  system_info · resource_manager · process_manager · storage_manager · tree_scanner
+History layer               SQLite: recorder → writer thread → queries; storage snapshots and compare
+OS-specific layer           platform_ops · windows_backend · collectors/windows  →  Win32 · Registry · performance counters · WMI · tasklist (+ psutil)
+Utilities                   constants (thresholds, colours) · formatting · background · logging
 ```
 
 Design decisions:
 
 | Decision | Reason |
 |---|---|
-| All Windows-specific calls in `windows_backend.py` | One place to review, mock in tests, and replace with a Linux backend later |
+| Windows-specific code only in `platform_ops`, `windows_backend` and `collectors/windows` (a test enforces it) | A small, reviewable surface; injectable shims make it testable on any OS; collectors are chosen in one place so another OS could be added |
+| A reading's value exists only when it was measured (`Reading` refuses a value otherwise) | Never invent data; say why something is missing |
+| Analysis is pure (snapshot + recent window + history in, result out) | Easy to test; no hidden measurement |
+| One writer thread owns every SQLite write | The GUI never waits on disk; errors are contained |
 | Thresholds only in `constants.py` | Change one number, behaviour changes everywhere |
 | Worker threads post to a queue, GUI drains it | Tkinter is not thread-safe; this keeps the UI responsive |
 | Any unavailable metric returns `None` → "Unavailable on this platform" | Never invent data |
-| No database, no config file | Nothing needs to persist; settings live in memory |
+| Local files only: `settings.json`, optional `history.db`, reports, a log (in `%LOCALAPPDATA%\OScope`) | Settings and history survive restarts; nothing is sent anywhere |
 
 ## 7. Windows Internals Used
 
@@ -97,7 +104,9 @@ by the kernel when read; they occupy no disk space.
 | Process list | numeric directories in `/proc` | `psutil.process_iter` |
 | Disk usage | `statvfs` (`df`) | `GetDiskFreeSpaceExW` |
 
-Because OS-specific code is isolated, a Linux backend would replace `windows_backend.py` and leave the GUI unchanged.
+Because OS-specific code is isolated (`platform_ops`, `windows_backend`, `collectors/windows`) and collectors are selected in one function
+(`collectors/registry.py`), a Linux set of collectors (`/proc/pressure`, `/sys/class/hwmon`, `/sys/class/power_supply`) could be added without
+changing the analysis or the GUI. It has not been built.
 
 ## 9. Process Management
 
@@ -145,11 +154,16 @@ Manual equivalents the panel may ask about: `tasklist`, `wmic cpu get name`, `sy
 |---|---|
 | `main.py` | OS check → dependency check → start GUI; shows friendly messages, never a traceback |
 | `core/platform.py` | Detects OS; `UNSUPPORTED_MESSAGE` |
-| `core/windows_backend.py` | Every Win32 / registry / `tasklist` call; each returns `None` on failure |
-| `core/sampler.py` | Thread: collects `Snapshot` (CPU, memory, storage, uptime, processes, findings) each interval; minimum 1 s gap so CPU % is meaningful |
+| `core/platform_ops.py` | The one place for OS differences the rest of the app needs: link detection, hidden/system/cloud file flags, app-data folder, elevation, system drive |
+| `core/windows_backend.py` | Direct Win32 / registry / `tasklist` calls; each returns `None` on failure |
+| `collectors/*` | Evidence: `Reading` + `Availability`; Windows collectors for memory commitment, paging, GPU, thermal/fan, power, startup; disk activity (psutil) |
+| `analysis/*` | Process grouping, trends, detectors, relationship rules, questions, workloads, wording rules, the orchestrator |
+| `history/*` | SQLite schema and migrations, recorder (downsampling), writer thread, retention, storage snapshots and compare, settings |
+| `core/sampler.py` | Thread: collects `Snapshot` (CPU, memory, storage, uptime, processes, groups, collector readings, findings) each interval, keeps a ring buffer of recent samples; minimum 1 s gap so CPU % is meaningful |
 | `core/process_manager.py` | `list_processes()`, `get_details(pid)` |
 | `core/storage_manager.py` | `get_drive_usage()`, `DirectoryScanner` (streaming, cancellable, permission-tolerant) |
-| `core/diagnostics.py` | `evaluate(cpu, mem, storage)` → list of `{level, title, message}` |
+| `core/tree_scanner.py` | Full-tree scan: children always sum to the folder's size (smallest files folded), denied/linked/cloud-only/hidden reporting |
+| `core/diagnostics.py` | `evaluate(cpu, mem, storage)` → list of `{level, title, message}` (the quick "right now" status on the Overview) |
 | `core/report.py` | Builds and saves the text report |
 | `gui/*` | Views and widgets; only the main thread touches widgets |
 
@@ -163,20 +177,22 @@ Diagnostic rules (`app/utils/constants.py`):
 | Storage ≥ 90% / ≥ 95% | warning / critical ("low storage") |
 | none of the above | normal |
 
-Messages use cautious wording ("possible", "consider reviewing"); OScope never names a specific cause.
+Messages use cautious wording ("possible", "consider reviewing"); OScope never names a specific cause. The question-based answers use further
+thresholds and a stricter wording guard: see `docs/EVIDENCE_AND_HONESTY.md`.
 
 ## 14. Testing
 
-See `TESTING.md`. Summary: 44 automated tests (36 without GUI, 8 driving the real window) plus manual
-Windows test cases. The automated suite mocks `tasklist` output and simulates access-denied so those paths
-are tested on any machine. **The project was developed on macOS, where the Windows-only calls cannot execute;
-TESTING.md marks every result that still has to be confirmed on a real Windows machine.**
+See `TESTING.md`. Summary: **417 automated tests** (collectors, analysis, history, scanner, the whole GUI under a virtual display)
+plus manual Windows checks (`docs/WINDOWS_VERIFICATION.md`). The suite uses injected shims and hand-written samples (typeperf CSV, PowerShell
+output, registry values) and simulates access-denied, links and cloud placeholders, so those paths are tested on any machine.
+**The current version was developed on Linux, where the Windows-only calls cannot execute; the verification checklist marks everything that must
+still be confirmed on a real Windows machine.**
 
 ## 15. Results
 
-* All 44 automated tests pass on the development machine (macOS, Python 3.12, Tk 9.0), 2026-09-29.
-* On that machine the application starts, refreshes, searches, sorts, scans folders, handles a missing folder and produces a report, all without freezing the interface (a slowed scan test confirms the GUI loop keeps ticking, longest gap under 0.5 s).
-* Windows-specific behaviour (registry reads, `GlobalMemoryStatusEx`, `tasklist`) is covered by parsing tests and a structure-size test, but the live calls need confirmation on Windows (see TESTING.md, "Pending").
+* All 417 automated tests pass on the development machine (Linux, Python 3.12, Tk under Xvfb); the GUI was also checked from screenshots at 1280x800 and 1366x768.
+* The application starts on the question screen, answers every question on synthetic and live data, groups processes, scans folders (tree, treemap, search, filter, compare), keeps history, and produces a report, without freezing the interface (a slowed scan test confirms the GUI loop keeps ticking).
+* Windows-specific behaviour (performance counters, WMI, registry, power API, file attributes, `tasklist`) is covered by parsing and availability tests on hand-written samples; the live calls need confirmation on Windows (see `docs/WINDOWS_VERIFICATION.md`).
 
 ## 16. Limitations
 
@@ -185,13 +201,16 @@ TESTING.md marks every result that still has to be confirmed on a real Windows m
 * Cannot read protected processes or files without permission.
 * Depends on Windows-specific interfaces and psutil.
 * CPU % is an interval average and can miss short spikes.
-* Sizes are logical sizes; cloud placeholder files can inflate totals; very long paths may be skipped.
+* Sizes are logical sizes; hard links are counted once per name; very long paths may be skipped.
+* Cloud-only (OneDrive) files are reported separately rather than counted; the attribute handling still needs checking on a real PC.
+* Temperature and fan speed are shown only if the firmware exposes them, which many PCs do not; OScope says so instead of guessing.
+* Disk activity is throughput, not "how busy"; per-process GPU and the Photoshop scratch location are not available.
 * Windows only in this edition.
 
 ## 17. Future Scope
 
-Historical resource graphs · process tree · network monitoring · startup-application analysis ·
-configurable alerts · graphical disk map · CSV/PDF export · Linux backend using `/proc` · macOS support.
+Application footprint and residual-data detection after uninstall · cleanup as analysis only · elevated scans · per-process GPU ·
+services and scheduled-task startup analysis · history graphs · CSV/PDF export · Linux collectors · macOS support.
 
 ## 18. Conclusion
 
