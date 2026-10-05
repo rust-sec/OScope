@@ -11,7 +11,8 @@ from typing import Callable, Optional
 from app.analysis.models import DiagnosticResult
 from app.core import platform_ops
 from app.core.sampler import Snapshot
-from app.history import queries, retention
+from app.core.tree_scanner import TreeScanResult
+from app.history import queries, retention, storage
 from app.history.db import DB_FILENAME, open_connection
 from app.history.queries import HistoryContext
 from app.history.records import EventRow, Operation, insert_event
@@ -118,15 +119,8 @@ class HistoryService:
     # -- reading -----------------------------------------------------------------------------------
     def context(self, hours: int = 24) -> Optional[HistoryContext]:
         """What happened recently, for "What changed?". May block briefly: call from a worker thread."""
-        if self._path is None:
-            return None
-        if self._writer is not None:
-            self._writer.flush(timeout=3.0)  # waits for the database to open, then makes the newest rows readable
-        if not self._path.is_file():
-            return None
-        try:
-            conn = open_connection(self._path, read_only=True)
-        except sqlite3.Error:
+        conn = self._read_connection()
+        if conn is None:
             return None
         try:
             return queries.build_context(conn, int(self._clock()), hours)
@@ -135,6 +129,59 @@ class HistoryService:
             return None
         finally:
             conn.close()
+
+    # -- storage snapshots ----------------------------------------------------------------------------
+    def save_storage_scan(self, result: TreeScanResult, elevated: Optional[bool] = None) -> bool:
+        """Remember a finished folder scan (not a cancelled or failed one) for later comparison."""
+        if not self._enabled:
+            return False
+        operation = storage.snapshot_operation(result, int(self._clock()), elevated)
+        if operation is None or not self._ensure_started():
+            return False
+        self._enqueue(operation)
+        return True
+
+    def storage_snapshots(self, root: str, limit: int = 20) -> list[storage.StorageSnapshot]:
+        """Saved scans of ``root``, newest first. May block briefly: call from a worker thread."""
+        conn = self._read_connection()
+        if conn is None:
+            return []
+        try:
+            return storage.list_snapshots(conn, root, limit)
+        except sqlite3.Error as exc:
+            _LOG.warning("Could not read storage snapshots: %s", exc)
+            return []
+        finally:
+            conn.close()
+
+    def compare_latest(self, root: str) -> Optional[storage.StorageComparison]:
+        """The newest saved scan of ``root`` against the one before it; None if there are not two."""
+        conn = self._read_connection()
+        if conn is None:
+            return None
+        try:
+            summaries = storage.list_snapshots(conn, root, 2)
+            if len(summaries) < 2:
+                return None
+            newer, older = storage.load_snapshot(conn, summaries[0].id), storage.load_snapshot(conn, summaries[1].id)
+            return storage.compare(older, newer) if older and newer else None
+        except sqlite3.Error as exc:
+            _LOG.warning("Could not compare storage snapshots: %s", exc)
+            return None
+        finally:
+            conn.close()
+
+    def _read_connection(self) -> Optional[sqlite3.Connection]:
+        if self._path is None:
+            return None
+        if self._writer is not None:
+            self._writer.flush(timeout=3.0)
+        if not self._path.is_file():
+            return None
+        try:
+            return open_connection(self._path, read_only=True)
+        except sqlite3.Error:
+            return None
 
     # -- housekeeping ------------------------------------------------------------------------------
     def clear(self, timeout: float = 5.0) -> bool:

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -49,11 +49,12 @@ def metric(ts, mem=50.0, cpu=20.0, free=100 * 2**30, total=500 * 2**30, commit=N
 class DatabaseTests(unittest.TestCase):
     def test_migrate_creates_the_schema_once(self):
         conn = sqlite3.connect(":memory:")
-        self.assertEqual(db.migrate(conn), 1)
+        self.assertEqual(db.migrate(conn), db.MIGRATIONS[-1][0])
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"metric_samples", "process_top", "storage_snapshots", "storage_categories",
                          "storage_dirs", "diagnostic_events"} <= tables)
-        self.assertEqual(db.migrate(conn), 1)  # running again changes nothing
+        self.assertEqual(db.migrate(conn), db.MIGRATIONS[-1][0])  # running again changes nothing
+        self.assertIn("dirs_truncated", [r[1] for r in conn.execute("PRAGMA table_info(storage_snapshots)")])
 
     def test_later_versions_are_applied_in_order_and_only_once(self):
         conn = sqlite3.connect(":memory:")
@@ -553,6 +554,176 @@ class ChangesTests(unittest.TestCase):
         facts = Facts(ta.make_snapshot(), ta.make_window(), "general", history(metrics=steady(minutes=3)))
         self.assertFalse(facts.has("history"))                    # 3 rows is not enough
         self.assertTrue(Facts(ta.make_snapshot(), ta.make_window(), "general", history(metrics=steady())).has("history"))
+
+
+# --------------------------------------------------------------------------- #
+# Storage snapshots and comparison
+# --------------------------------------------------------------------------- #
+from app.core.tree_scanner import TreeScanner  # noqa: E402
+from app.history import storage as storage_history  # noqa: E402
+from app.history.storage import StorageSnapshot  # noqa: E402
+
+
+def snapshot(id=1, ts=NOW, root="D:\\Media", total=1000, cats=None, dirs=None, denied=0, elevated=False, truncated=False):
+    return StorageSnapshot(id, ts, root, total, 10, 2, denied, 0, elevated, truncated,
+                           dict(cats or {}), dict(dirs or {}))
+
+
+def tree_on_disk(tmp: Path, sizes: dict) -> object:
+    for relative, size in sizes.items():
+        target = tmp / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"x" * size)
+    return TreeScanner(str(tmp)).scan()
+
+
+class StorageCompareTests(unittest.TestCase):
+    def test_category_and_folder_deltas(self):
+        older = snapshot(cats={"Videos": (500, 2), "Images": (300, 5)}, dirs={"D:\\Media\\Raw": 400, "D:\\Media\\Photos": 300}, total=800)
+        newer = snapshot(id=2, ts=NOW + DAY, cats={"Videos": (900, 3), "Images": (250, 5), "Audio": (50, 1)},
+                         dirs={"D:\\Media\\Raw": 800, "D:\\Media\\Photos": 250}, total=1200)
+        comparison = storage_history.compare(older, newer)
+        self.assertEqual(comparison.total_delta, 400)
+        deltas = {c.category: c.delta for c in comparison.categories}
+        self.assertEqual(deltas, {"Videos": 400, "Images": -50, "Audio": 50})
+        self.assertEqual(comparison.categories[0].category, "Videos")            # biggest change first
+        changed = {PureWindowsPath(c.path).name: c.delta for c in comparison.changed_dirs}
+        self.assertEqual(changed, {"Raw": 400, "Photos": -50})
+        self.assertEqual(comparison.warnings, [])
+
+    def test_unchanged_folders_are_left_out(self):
+        same = {"D:\\Media\\A": 100}
+        comparison = storage_history.compare(snapshot(dirs=same), snapshot(id=2, dirs=dict(same)))
+        self.assertEqual(comparison.changed_dirs, [])
+
+    def test_a_new_or_removed_folder_is_exact_when_the_other_list_is_complete(self):
+        older = snapshot(dirs={"D:\\Media\\Old": 70})
+        newer = snapshot(id=2, dirs={"D:\\Media\\New": 90})
+        changes = {PureWindowsPath(c.path).name: (c.delta, c.note) for c in storage_history.compare(older, newer).changed_dirs}
+        self.assertEqual(changes["New"], (90, "new folder"))
+        self.assertEqual(changes["Old"], (-70, "folder no longer present"))
+
+    def test_missing_from_a_cut_short_list_is_unknown_not_zero(self):
+        older = snapshot(dirs={"D:\\Media\\Big": 500}, truncated=True)            # the older list was cut short
+        newer = snapshot(id=2, dirs={"D:\\Media\\Big": 500, "D:\\Media\\Mystery": 40})
+        comparison = storage_history.compare(older, newer)
+        mystery = next(c for c in comparison.changed_dirs if c.path.endswith("Mystery"))
+        self.assertIsNone(mystery.delta)                                         # cannot be known
+        self.assertEqual((mystery.before, mystery.after), (None, 40))
+        self.assertIn("not in the older scan's list", mystery.note)
+        self.assertTrue(any("Only the biggest folders" in w for w in comparison.warnings))
+
+    def test_known_changes_come_before_unknown_ones(self):
+        older = snapshot(dirs={"D:\\Media\\A": 100}, truncated=True)
+        newer = snapshot(id=2, dirs={"D:\\Media\\A": 120, "D:\\Media\\Z": 999})
+        order = [c.delta for c in storage_history.compare(older, newer).changed_dirs]
+        self.assertEqual(order, [20, None])
+
+    def test_scans_that_are_not_like_for_like_say_so(self):
+        older = snapshot(denied=0, elevated=False)
+        newer = snapshot(id=2, denied=40, elevated=True)
+        warnings = storage_history.compare(older, newer).warnings
+        self.assertTrue(any("0 unreadable items before, 40 now" in w for w in warnings))
+        self.assertTrue(any("administrator" in w for w in warnings))
+        unknown = storage_history.compare(snapshot(elevated=None), snapshot(id=2, elevated=True)).warnings
+        self.assertFalse(any("administrator" in w for w in unknown))             # an unknown state is not a mismatch
+
+    def test_different_folders_cannot_be_compared(self):
+        with self.assertRaises(ValueError):
+            storage_history.compare(snapshot(root="D:\\Media"), snapshot(id=2, root="D:\\Other"))
+
+    def test_same_root_ignores_trailing_separators(self):
+        self.assertTrue(storage_history.same_root("/a/b", "/a/b/"))
+        self.assertFalse(storage_history.same_root("/a/b", "/a/c"))
+
+
+class StorageSnapshotStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name) / "data"
+        self.data.mkdir()
+        self.scan_root = Path(self.tmp.name) / "scanned"
+        self.clock = [NOW]
+        self.service = HistoryService(self.data, True, clock=lambda: self.clock[0])
+        self.addCleanup(self.service.close)
+
+    def scan(self, sizes):
+        import shutil
+        if self.scan_root.exists():
+            shutil.rmtree(self.scan_root)
+        self.scan_root.mkdir()
+        return tree_on_disk(self.scan_root, sizes)
+
+    def test_a_scan_round_trips_through_the_database(self):
+        result = self.scan({"Videos/a.mp4": 5000, "Videos/b.mp4": 1000, "Docs/r.pdf": 200})
+        self.assertTrue(self.service.save_storage_scan(result, elevated=False))
+        saved = self.service.storage_snapshots(str(self.scan_root))
+        self.assertEqual(len(saved), 1)
+        conn = db.open_connection(self.service.path, read_only=True)
+        full = storage_history.load_snapshot(conn, saved[0].id)
+        conn.close()
+        self.assertEqual(full.total_size, 6200)
+        self.assertEqual(full.categories["Videos"], (6000, 2))
+        self.assertEqual(full.categories["Documents"], (200, 1))
+        self.assertEqual({Path(p).name: s for p, s in full.dirs.items()}, {"Videos": 6000, "Docs": 200})
+        self.assertIs(full.elevated, False)
+        self.assertFalse(full.dirs_truncated)
+
+    def test_cancelled_and_failed_scans_are_not_saved(self):
+        result = self.scan({"a.bin": 10})
+        result.cancelled = True
+        self.assertFalse(self.service.save_storage_scan(result))
+        broken = TreeScanner(str(self.scan_root / "missing")).scan()
+        self.assertFalse(self.service.save_storage_scan(broken))
+        self.assertEqual(self.service.storage_snapshots(str(self.scan_root)), [])
+
+    def test_two_scans_compare_and_changes_are_found(self):
+        self.service.save_storage_scan(self.scan({"Videos/a.mp4": 5000, "Docs/r.pdf": 200}))
+        self.clock[0] += DAY
+        self.service.save_storage_scan(self.scan({"Videos/a.mp4": 5000, "Videos/new.mp4": 3000, "Docs/r.pdf": 150}))
+        comparison = self.service.compare_latest(str(self.scan_root))
+        self.assertEqual(comparison.total_delta, 2950)
+        self.assertEqual({c.category: c.delta for c in comparison.categories}, {"Videos": 3000, "Documents": -50})
+        self.assertEqual({Path(c.path).name: c.delta for c in comparison.changed_dirs}, {"Videos": 3000, "Docs": -50})
+        self.assertLess(comparison.older.ts, comparison.newer.ts)
+
+    def test_one_scan_is_not_enough_to_compare(self):
+        self.service.save_storage_scan(self.scan({"a.bin": 10}))
+        self.assertIsNone(self.service.compare_latest(str(self.scan_root)))
+        self.assertIsNone(HistoryService(None).compare_latest("x"))
+
+    def test_other_folders_do_not_mix_in(self):
+        self.service.save_storage_scan(self.scan({"a.bin": 10}))
+        self.assertEqual(self.service.storage_snapshots(str(Path(self.tmp.name) / "elsewhere")), [])
+
+    def test_history_off_saves_nothing(self):
+        self.service.set_enabled(False)
+        self.assertFalse(self.service.save_storage_scan(self.scan({"a.bin": 10})))
+
+    def test_the_list_of_big_folders_is_flagged_when_it_had_to_be_cut(self):
+        sizes = {f"d{i:03}/f.bin": 10 + i for i in range(storage_history.DIR_LIST_LIMIT + 20)}
+        self.service.save_storage_scan(self.scan(sizes))
+        summary = self.service.storage_snapshots(str(self.scan_root))[0]
+        self.assertTrue(summary.dirs_truncated)
+        conn = db.open_connection(self.service.path, read_only=True)
+        self.assertEqual(len(storage_history.load_snapshot(conn, summary.id).dirs), storage_history.DIR_LIST_LIMIT)
+        conn.close()
+
+    def test_a_version_1_database_is_upgraded_in_place_without_losing_data(self):
+        path = self.data / "old.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(f"BEGIN;\n{db.SCHEMA_V1}\nPRAGMA user_version = 1;\nCOMMIT;")
+        conn.execute("INSERT INTO storage_snapshots(ts, root, total_size, file_count, dir_count, denied_count, skipped_count) "
+                     "VALUES (1, 'D:\\Old', 5, 1, 1, 0, 0)")
+        conn.commit()
+        conn.close()
+        upgraded, recreated = db.open_or_recreate(path)
+        self.assertFalse(recreated)
+        self.assertEqual(db.schema_version(upgraded), 2)
+        row = upgraded.execute("SELECT root, dirs_truncated FROM storage_snapshots").fetchone()
+        self.assertEqual((row["root"], row["dirs_truncated"]), ("D:\\Old", 0))
+        upgraded.close()
 
 
 if __name__ == "__main__":

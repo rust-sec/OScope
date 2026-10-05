@@ -59,6 +59,7 @@ LARGEST_DIRS_SHOWN = 15
 TOP_PROCESSES_SHOWN = 5
 
 MAX_TREE_NODES = 300_000            # soft cap on retained treemap nodes; aggregates stay correct past this
+MAX_FILES_PER_FOLDER = 2_000        # per folder, the smallest files beyond this are folded into one "(N smaller files)" item
 TREEMAP_MAX_RECTS_PER_LEVEL = 500   # per-zoom-level render cap; remainder lumped into one "+N more" rect
 
 # --------------------------------------------------------------------------- #

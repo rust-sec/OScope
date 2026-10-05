@@ -59,8 +59,14 @@ CREATE TABLE diagnostic_events(
 CREATE INDEX ix_events_ts ON diagnostic_events(ts);
 """
 
+# v2: remember whether a snapshot's list of biggest folders was cut short, so a folder missing from it is
+# understood as "unknown", not "zero".
+SCHEMA_V2 = """
+ALTER TABLE storage_snapshots ADD COLUMN dirs_truncated INTEGER NOT NULL DEFAULT 0;
+"""
+
 # (version, script). Append new versions; never edit an old one.
-MIGRATIONS: list[tuple[int, str]] = [(1, SCHEMA_V1)]
+MIGRATIONS: list[tuple[int, str]] = [(1, SCHEMA_V1), (2, SCHEMA_V2)]
 
 DATA_TABLES = ("metric_samples", "process_top", "storage_categories", "storage_dirs", "storage_snapshots", "diagnostic_events")
 
