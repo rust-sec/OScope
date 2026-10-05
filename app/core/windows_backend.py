@@ -1,4 +1,7 @@
-"""Every Windows-specific operation in OScope lives in this one file.
+"""Direct Windows API / registry / command access for OScope.
+
+The rest of the app reaches OS differences through ``platform_ops`` (and, for
+evidence, ``app.collectors``); only those layers import this module.
 
 Rules for this module:
   * Each function is read-only (it observes the OS, never changes it).
@@ -14,6 +17,7 @@ Windows interfaces used
   DwmSetWindowAttribute (dwmapi)    dark title bar (cosmetic)
   SetProcessDpiAwareness (shcore)   sharp text on high-DPI screens (cosmetic)
   tasklist.exe                      session, window title, hosted services of one PID
+  IsUserAnAdmin         (shell32)   whether the process is elevated (display only)
 """
 
 from __future__ import annotations
@@ -154,6 +158,22 @@ def get_uptime_seconds() -> Optional[float]:
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         kernel32.GetTickCount64.restype = ctypes.c_ulonglong
         return kernel32.GetTickCount64() / 1000.0
+    except Exception:
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# Privileges
+# --------------------------------------------------------------------------- #
+def is_user_admin() -> Optional[bool]:
+    """True if the process has administrator rights (shell32.IsUserAnAdmin); None if unknown.
+
+    Display only: OScope never asks for elevation and never changes anything with it.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
     except Exception:
         return None
 

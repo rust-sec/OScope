@@ -3,27 +3,13 @@
 from __future__ import annotations
 
 import tkinter as tk
-from dataclasses import dataclass
 from tkinter import ttk
 from typing import Callable
 
 from app.core import windows_backend
 from app.gui.components import FlatButton, font
-from app.utils.constants import (
-    APP_NAME,
-    COLORS,
-    LARGE_FILE_THRESHOLD_MB,
-    REFRESH_INTERVAL_CHOICES,
-    REFRESH_INTERVAL_SECONDS,
-)
-
-
-@dataclass
-class AppSettings:
-    """Run-time settings. Kept in memory only (OScope has no database or config file)."""
-
-    refresh_interval: int = REFRESH_INTERVAL_SECONDS
-    large_file_mb: int = LARGE_FILE_THRESHOLD_MB
+from app.history.settings_store import AppSettings  # noqa: F401 - re-exported for the main window
+from app.utils.constants import APP_NAME, COLORS, REFRESH_INTERVAL_CHOICES
 
 
 def _make_dialog(root: tk.Misc, title: str, width: int, height: int) -> tk.Toplevel:

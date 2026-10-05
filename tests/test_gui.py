@@ -24,6 +24,7 @@ try:
     from app.core import report
     from app.core.storage_manager import DirectoryScanner
     from app.gui.main_window import MainWindow
+    from app.history.settings_store import AppSettings, SettingsStore
 except ImportError as exc:  # pragma: no cover
     raise unittest.SkipTest(f"GUI test dependencies unavailable: {exc}")
 
@@ -45,6 +46,10 @@ class GuiTests(unittest.TestCase):
             cls.root = tk.Tk()
         except tk.TclError as exc:
             raise unittest.SkipTest(f"No display available: {exc}")
+        # keep settings/logs/reports out of the real per-user data folder
+        cls._data_dir = tempfile.TemporaryDirectory()
+        cls._env = mock.patch.dict(os.environ, {"OSCOPE_DATA_DIR": cls._data_dir.name})
+        cls._env.start()
         cls.window = MainWindow(cls.root)
         deadline = time.time() + 15
         while cls.window.latest is None and time.time() < deadline:
@@ -56,6 +61,8 @@ class GuiTests(unittest.TestCase):
             cls.window._on_close()
         except tk.TclError:
             pass
+        cls._env.stop()
+        cls._data_dir.cleanup()
 
     # -- startup / overview -----------------------------------------------------
     def test_01_opens_on_overview_and_shows_data(self):
@@ -273,6 +280,17 @@ class GuiTests(unittest.TestCase):
                 result = view.reveal_selected_in_explorer()
             self.assertTrue(result)
             reveal.assert_called_once_with(node.path)
+
+    def test_13_applied_settings_are_saved_and_restored_on_next_launch(self):
+        window = self.window
+        try:
+            window._apply_settings(AppSettings(refresh_interval=5, large_file_mb=123))
+            saved = SettingsStore.default().load()  # what the next launch would read
+            self.assertEqual((saved.refresh_interval, saved.large_file_mb), (5, 123))
+            self.assertEqual(window.storage.threshold_mb, 123)
+        finally:
+            window._apply_settings(AppSettings())  # restore defaults for any later test
+        self.assertEqual(SettingsStore.default().load(), AppSettings())
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ STORAGE_CRITICAL_PERCENT = 95  # "Very low storage"      (critical)
 REFRESH_INTERVAL_SECONDS = 2
 REFRESH_INTERVAL_CHOICES = (1, 2, 3, 5, 10)
 MIN_SAMPLE_GAP_SECONDS = 1.0        # CPU % is meaningless if sampled faster than this
+SAMPLE_WINDOW_SIZE = 120            # recent samples kept in memory for "sustained" checks (~4 min at 2 s)
 
 LARGE_FILE_THRESHOLD_MB = 500
 MAX_LARGE_FILES_KEPT = 200          # scanner keeps only the N biggest files in memory

@@ -40,7 +40,9 @@ def main() -> int:
 
     try:
         from app.gui.main_window import run
+        from app.utils.logging_setup import setup_logging
 
+        setup_logging()
         run()
     except Exception as exc:  # noqa: BLE001
         if os.environ.get("OSCOPE_DEBUG") == "1":

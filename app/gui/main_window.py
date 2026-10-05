@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import os
 import tkinter as tk
 from tkinter import messagebox
 from typing import Optional
 
 from app.core import platform as oscope_platform
-from app.core import report, windows_backend
+from app.core import platform_ops, report, windows_backend
 from app.core.sampler import Sampler, Snapshot
 from app.core.system_info import get_static_info
 from app.gui.components import FlatButton, apply_theme, font
 from app.gui.dialogs import AppSettings, show_about, show_settings
+from app.history.settings_store import SettingsStore
 from app.gui.overview_view import OverviewView
 from app.gui.processes_view import ProcessesView
 from app.gui.storage_view import StorageView
@@ -32,7 +32,8 @@ class MainWindow:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.settings = AppSettings()
+        self.settings_store = SettingsStore.default()
+        self.settings = self.settings_store.load()
         self.runner = BackgroundRunner(root)
         self.info = get_static_info()
         self.latest: Optional[Snapshot] = None
@@ -45,6 +46,7 @@ class MainWindow:
         self._build_header()
         self._build_sidebar()
         self._build_content()
+        self.storage.set_threshold(self.settings.large_file_mb)  # restore the saved threshold
         self.show_view("overview")  # the app always opens on System Health
 
         root.bind("<F5>", lambda _e: self.refresh_now())
@@ -182,6 +184,7 @@ class MainWindow:
     def _apply_settings(self, settings: AppSettings) -> None:
         self.sampler.set_interval(settings.refresh_interval)
         self.storage.set_threshold(settings.large_file_mb)
+        self.settings_store.save(settings)
 
     # ------------------------------------------------------------------------ report
     def generate_report(self) -> None:
@@ -201,12 +204,7 @@ class MainWindow:
         if messagebox.askyesno(
             APP_NAME, f"Report saved to:\n{path}\n\nOpen the reports folder?", parent=self.root
         ):
-            opener = getattr(os, "startfile", None)  # Windows only
-            if opener is not None:
-                try:
-                    opener(str(path.parent))
-                except OSError:
-                    pass
+            platform_ops.open_path(str(path.parent))  # Windows only; no-op elsewhere
 
     # ------------------------------------------------------------------------ shutdown
     def _on_close(self) -> None:

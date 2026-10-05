@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from app.core import diagnostics
+from app.core import diagnostics, platform_ops
 from app.core.sampler import Snapshot
 from app.core.storage_manager import ScanResult
 from app.core.system_info import StaticInfo
@@ -24,8 +24,16 @@ _WIDTH = 50
 _HEAVY = "=" * _WIDTH
 _LIGHT = "-" * _WIDTH
 
-# reports/ sits next to main.py:  <project>/app/core/report.py -> parents[2] == <project>
-REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
+# None means "use the default": <app data folder>/reports, or <project>/reports when there is no
+# app-data folder. Set it to a Path (tests do) to force a location.
+REPORTS_DIR: Optional[Path] = None
+_PROJECT_REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"  # <project>/app/core/report.py -> <project>
+
+
+def default_reports_dir() -> Path:
+    """Where reports go unless told otherwise: the per-user app-data folder (works when installed too)."""
+    data_dir = platform_ops.app_data_dir()
+    return data_dir / "reports" if data_dir is not None else _PROJECT_REPORTS_DIR
 
 
 def _section(title: str) -> list[str]:
@@ -130,13 +138,14 @@ def build_report(
 
 
 def save_report(text: str, reports_dir: Optional[Path] = None, now: Optional[datetime] = None) -> Path:
-    """Write the report to ``reports/oscope_report_<timestamp>.txt`` and return its path.
+    """Write the report to ``<reports folder>/oscope_report_<timestamp>.txt`` and return its path.
 
-    If the reports folder is not writable, falls back to ``~/OScope Reports``.
+    The folder is ``reports_dir`` if given, else ``REPORTS_DIR``, else the per-user
+    app-data folder. If it is not writable, falls back to ``~/OScope Reports``.
     """
     now = now or datetime.now()
     filename = f"oscope_report_{format_file_stamp(now)}.txt"
-    primary = reports_dir or REPORTS_DIR
+    primary = reports_dir or REPORTS_DIR or default_reports_dir()
     try:
         primary.mkdir(parents=True, exist_ok=True)
         target = primary / filename
