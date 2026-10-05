@@ -550,6 +550,45 @@ class ChangesTests(unittest.TestCase):
             for text in explain.result_texts(result):
                 self.assertEqual(explain.find_forbidden(text), [], text)
 
+    def test_a_big_change_between_folder_scans_is_reported_and_points_to_storage(self):
+        gb = 2**30
+        older = snapshot(ts=NOW - 3 * DAY, root="D:\\Media", total=100 * gb, cats={"Videos": (60 * gb, 10)})
+        newer = snapshot(id=2, ts=NOW - HOUR, root="D:\\Media", total=125 * gb, cats={"Videos": (85 * gb, 14)})
+        ctx = history(metrics=steady())
+        ctx = HistoryContext(ctx.now, ctx.metrics, ctx.events, ctx.memory_groups, ctx.memory_high_samples,
+                             storage_history.compare(older, newer))
+        finding = self.finding(ctx)
+        self.assertEqual((finding.level, finding.goto), ("info", "storage"))
+        self.assertIn("(+25.0 GB between scans)", finding.happening)   # the folder name is the path's last part on Windows
+        scan = next(e for e in finding.contributing if e.id == "history.scan")
+        self.assertIn("100.0 GB to 125.0 GB", scan.value_text)
+        self.assertTrue(any(e.id == "history.scan.Videos" and e.value_text == "+25.0 GB" for e in finding.contributing))
+
+    def test_a_small_scan_change_is_shown_but_not_flagged(self):
+        gb = 2**30
+        older = snapshot(ts=NOW - DAY, total=100 * gb)
+        newer = snapshot(id=2, ts=NOW - HOUR, total=101 * gb)
+        ctx = HistoryContext(NOW, tuple(steady()), (), (), 0, storage_history.compare(older, newer))
+        finding = self.finding(ctx)
+        self.assertEqual(finding.level, "normal")
+        self.assertTrue(any(e.id == "history.scan" for e in finding.contributing))
+
+    def test_scan_comparisons_that_are_not_like_for_like_carry_their_warning(self):
+        gb = 2**30
+        older = snapshot(ts=NOW - DAY, total=100 * gb, denied=0)
+        newer = snapshot(id=2, ts=NOW - HOUR, total=140 * gb, denied=500)
+        ctx = HistoryContext(NOW, tuple(steady()), (), (), 0, storage_history.compare(older, newer))
+        care = next(e for e in self.finding(ctx).contributing if e.id == "history.scan.care")
+        self.assertEqual(care.strength, ta.EvidenceStrength.UNVERIFIED)
+        self.assertIn("Different amounts could be read", care.value_text)
+
+    def test_very_old_scans_are_not_presented_as_recent_change(self):
+        gb = 2**30
+        older = snapshot(ts=NOW - 90 * DAY, total=100 * gb)
+        newer = snapshot(id=2, ts=NOW - 60 * DAY, total=300 * gb)
+        ctx = HistoryContext(NOW, tuple(steady()), (), (), 0, storage_history.compare(older, newer))
+        self.assertFalse(any(e.id == "history.scan" for e in self.finding(ctx).contributing))
+
     def test_facts_history_token(self):
         facts = Facts(ta.make_snapshot(), ta.make_window(), "general", history(metrics=steady(minutes=3)))
         self.assertFalse(facts.has("history"))                    # 3 rows is not enough
@@ -687,6 +726,16 @@ class StorageSnapshotStoreTests(unittest.TestCase):
         self.assertEqual({c.category: c.delta for c in comparison.categories}, {"Videos": 3000, "Documents": -50})
         self.assertEqual({Path(c.path).name: c.delta for c in comparison.changed_dirs}, {"Videos": 3000, "Docs": -50})
         self.assertLess(comparison.older.ts, comparison.newer.ts)
+
+    def test_the_changed_answer_gets_the_latest_comparison_from_the_database(self):
+        self.assertIsNone(self.service.context())                                  # nothing saved yet
+        self.service.save_storage_scan(self.scan({"Videos/a.mp4": 5000}))
+        self.assertIsNone(self.service.context().storage)                          # one scan is not a comparison
+        self.clock[0] += DAY
+        self.service.save_storage_scan(self.scan({"Videos/a.mp4": 5000, "Videos/b.mp4": 7000}))
+        context = self.service.context()
+        self.assertEqual(context.storage.total_delta, 7000)
+        self.assertEqual(context.storage.newer.root, str(self.scan_root))
 
     def test_one_scan_is_not_enough_to_compare(self):
         self.service.save_storage_scan(self.scan({"a.bin": 10}))

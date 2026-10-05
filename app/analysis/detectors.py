@@ -6,6 +6,7 @@ cause and effect; never claim more than the data shows; say plainly when somethi
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Callable
 
@@ -30,7 +31,7 @@ from app.utils.constants import (
     TEMP_WARM_C,
     TOP_GROUPS_SHOWN,
 )
-from app.utils.formatting import format_bytes, format_duration, format_used_of_total
+from app.utils.formatting import format_bytes, format_delta, format_duration, format_used_of_total
 
 OBSERVED = EvidenceStrength.OBSERVED
 UNVERIFIED = EvidenceStrength.UNVERIFIED
@@ -432,6 +433,27 @@ def detect_changes(f: Facts) -> Finding:
         if -diff >= NOTABLE_FREE_DROP_BYTES or (total and -diff >= NOTABLE_FREE_DROP_FRACTION * total):
             notable.append(f"free space on the system drive (-{format_bytes(-diff)})")
             goto = "storage"
+
+    scan = history.storage
+    if scan is not None and (scan.newer.ts >= now - 30 * 86400):
+        root_name = os.path.basename(os.path.normpath(scan.newer.root)) or scan.newer.root
+        when = f"{datetime.fromtimestamp(scan.older.ts):%Y-%m-%d %H:%M} to {datetime.fromtimestamp(scan.newer.ts):%Y-%m-%d %H:%M}"
+        contributing.append(
+            Evidence(
+                "history.scan", f"Scanned folder {root_name}",
+                f"{format_bytes(scan.older.total_size)} to {format_bytes(scan.newer.total_size)} "
+                f"({format_delta(scan.total_delta)}) between scans, {when}",
+                OBSERVED, "local history",
+            )
+        )
+        for change in [c for c in scan.categories if c.delta][:3]:
+            contributing.append(Evidence(f"history.scan.{change.category}", f"  {change.category}", format_delta(change.delta), OBSERVED, "local history"))
+        base = scan.older.total_size or 1
+        if abs(scan.total_delta) >= NOTABLE_FREE_DROP_BYTES or abs(scan.total_delta) / base >= 0.05:
+            notable.append(f"the size of {root_name} ({format_delta(scan.total_delta)} between scans)")
+            goto = "storage"
+        if scan.warnings:
+            contributing.append(Evidence("history.scan.care", "Read with care", scan.warnings[0], EvidenceStrength.UNVERIFIED))
 
     events = [e for e in history.events if e.level != "normal"][-8:]
     for index, event in enumerate(events):

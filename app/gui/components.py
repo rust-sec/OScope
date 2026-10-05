@@ -95,6 +95,15 @@ def apply_theme(root: tk.Misc) -> None:
         selectbackground=[("readonly", COLORS["bg_alt"])],
         selectforeground=[("readonly", COLORS["text"])],
     )
+    style.configure(
+        "Oscope.Horizontal.TProgressbar",
+        troughcolor=COLORS["track"],
+        background=COLORS["accent"],
+        bordercolor=COLORS["track"],
+        lightcolor=COLORS["accent"],
+        darkcolor=COLORS["accent"],
+        thickness=6,
+    )
     root.option_add("*TCombobox*Listbox.background", COLORS["bg_alt"])
     root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
     root.option_add("*TCombobox*Listbox.selectBackground", COLORS["select"])
@@ -196,6 +205,11 @@ class FlatButton(tk.Label):
 
     def set_text(self, text: str) -> None:
         self.configure(text=text)
+
+    def set_toggled(self, on: bool) -> None:
+        """Show this button as the active choice of a pair (raised card) or the inactive one (flat)."""
+        self._normal = COLORS["card"] if on else COLORS["bg"]
+        self.configure(bg=self._normal)
 
 
 class ScrollableFrame(tk.Frame):

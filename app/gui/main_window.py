@@ -164,7 +164,7 @@ class MainWindow:
         )
         self.overview = OverviewView(self.content, self.info)
         self.processes = ProcessesView(self.content, self.runner, self.refresh_now)
-        self.storage = StorageView(self.content, self.runner)
+        self.storage = StorageView(self.content, self.runner, self.history)
         self._views = {
             "ask": self.ask,
             "overview": self.overview,

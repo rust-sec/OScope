@@ -5,6 +5,7 @@ size, coloured by file-type category, clickable, hoverable, and zoomable.
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime
 from typing import Callable, Optional, Sequence
 
 from app.core.tree_scanner import TreeNode
@@ -12,6 +13,8 @@ from app.gui.components import Card, FlatButton, font, section_title
 from app.gui.treemap_layout import Rect, layout_children
 from app.utils.constants import CATEGORY_COLORS, COLORS, TREEMAP_MAX_RECTS_PER_LEVEL
 from app.utils.formatting import format_bytes, format_count
+
+_MUTED = "#323847"  # file rectangles outside the active category filter
 
 
 def _label_color(fill: str) -> str:
@@ -44,10 +47,14 @@ class TreemapCanvas(tk.Canvas):
         parent: tk.Misc,
         on_select: Callable[[TreeNode], None],
         on_zoom: Callable[[TreeNode], None],
+        on_back: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__(parent, bg=COLORS["bg"], highlightthickness=0, bd=0)
         self._on_select = on_select
         self._on_zoom = on_zoom
+        self._on_back = on_back
+        self._filter: Optional[str] = None
+        self._tip_labels: list[tk.Label] = []
         self._node: Optional[TreeNode] = None
         self._rects: list[tuple[Rect, TreeNode]] = []
         self._selected: Optional[TreeNode] = None
@@ -58,6 +65,7 @@ class TreemapCanvas(tk.Canvas):
         self.bind("<Configure>", lambda _e: self._redraw())
         self.bind("<Button-1>", self._on_click)
         self.bind("<Double-Button-1>", self._on_double_click)
+        self.bind("<Button-3>", lambda _e: self._on_back() if self._on_back else None)  # right-click: up one level
         self.bind("<Motion>", self._on_motion)
         self.bind("<Leave>", lambda _e: self._hide_tooltip())
 
@@ -79,6 +87,15 @@ class TreemapCanvas(tk.Canvas):
     def set_selected(self, node: Optional[TreeNode]) -> None:
         self._selected = node
         self._redraw()
+
+    def set_category_filter(self, category: Optional[str]) -> None:
+        """Dim every file that is not in ``category`` (folders keep their colour). None shows everything."""
+        self._filter = category
+        self._redraw()
+
+    @property
+    def selected(self) -> Optional[TreeNode]:
+        return self._selected
 
     # -- rendering --------------------------------------------------------------
     def _redraw(self) -> None:
@@ -108,6 +125,8 @@ class TreemapCanvas(tk.Canvas):
 
     def _draw_rect(self, rect: Rect, node: TreeNode) -> None:
         color = CATEGORY_COLORS.get(node.category, CATEGORY_COLORS["Other"])
+        if self._filter is not None and not node.is_dir and node.category != self._filter:
+            color = _MUTED
         selected = node is self._selected
         # High-contrast white ring regardless of fill colour (an accent-blue
         # ring would blend into the Images category's own sky-blue fill).
@@ -116,9 +135,10 @@ class TreemapCanvas(tk.Canvas):
         self.create_rectangle(
             rect.x, rect.y, rect.x + rect.w, rect.y + rect.h,
             fill=color, outline=outline, width=width,
+            dash=(3, 3) if node.hidden and not selected else (),  # a dashed edge marks hidden items
         )
         if rect.w > self._MIN_LABEL_W and rect.h > self._MIN_LABEL_H:
-            label = node.name
+            label = ("⚠ " if node.denied else "") + node.name
             max_chars = max(int(rect.w / 7), 3)
             if len(label) > max_chars:
                 label = label[: max_chars - 1] + "…"
@@ -159,24 +179,47 @@ class TreemapCanvas(tk.Canvas):
         else:
             self._show_tooltip(event, node)
 
-    def _show_tooltip(self, event: tk.Event, node: TreeNode) -> None:
-        self._hide_tooltip()
-        top = tk.Toplevel(self)
-        top.overrideredirect(True)
-        top.attributes("-topmost", True)
-        frame = tk.Frame(top, bg=COLORS["card"], highlightthickness=1, highlightbackground=COLORS["border"])
-        frame.pack()
+    def _ensure_tooltip(self) -> tk.Toplevel:
+        """One tooltip window for the whole canvas, created once and re-used (moved, re-texted, hidden)."""
+        if self._tooltip is None:
+            top = tk.Toplevel(self)
+            top.withdraw()
+            top.overrideredirect(True)
+            top.attributes("-topmost", True)
+            frame = tk.Frame(top, bg=COLORS["card"], highlightthickness=1, highlightbackground=COLORS["border"])
+            frame.pack()
+            for index in range(5):
+                self._tip_labels.append(tk.Label(
+                    frame, text="", bg=COLORS["card"], fg=COLORS["text"] if index == 0 else COLORS["text_dim"],
+                    font=font(9, "bold" if index == 0 else "normal"), anchor="w", justify="left",
+                ))
+            self._tooltip = top
+        return self._tooltip
+
+    @staticmethod
+    def _tip_lines(node: TreeNode) -> list[str]:
         kind = "Folder" if node.is_dir else "File"
         lines = [node.name, f"{kind}  ·  {format_bytes(node.size)}"]
+        if node.denied:
+            lines.append("Access denied: size unknown, not zero")
+        elif node.is_dir and (node.file_count or node.dir_count):
+            lines.append(f"{format_count(node.file_count)} files, {format_count(node.dir_count)} folders")
+        if node.hidden:
+            lines.append("Hidden")
         if node.path:
             lines.append(node.path)
-        for i, line in enumerate(lines):
-            tk.Label(
-                frame, text=line, bg=COLORS["card"],
-                fg=COLORS["text"] if i == 0 else COLORS["text_dim"],
-                font=font(9, "bold" if i == 0 else "normal"), anchor="w", justify="left",
-            ).pack(fill="x", padx=8, pady=(6 if i == 0 else 0, 6 if i == len(lines) - 1 else 2))
-        self._tooltip = top
+        return lines[:5]
+
+    def _show_tooltip(self, event: tk.Event, node: TreeNode) -> None:
+        top = self._ensure_tooltip()
+        lines = self._tip_lines(node)
+        for index, label in enumerate(self._tip_labels):
+            if index < len(lines):
+                label.configure(text=lines[index])
+                label.pack(fill="x", padx=8, pady=(6 if index == 0 else 0, 6 if index == len(lines) - 1 else 2))
+            else:
+                label.pack_forget()
+        top.deiconify()
         self._move_tooltip(event)
 
     def _move_tooltip(self, event: tk.Event) -> None:
@@ -185,8 +228,7 @@ class TreemapCanvas(tk.Canvas):
 
     def _hide_tooltip(self) -> None:
         if self._tooltip is not None:
-            self._tooltip.destroy()
-            self._tooltip = None
+            self._tooltip.withdraw()
         self._hovered = None
 
 
@@ -215,47 +257,105 @@ class Breadcrumb(tk.Frame):
 
 
 class DetailPanel(Card):
-    """Selected file/folder: name, type, exact size, path, Show in Explorer."""
+    """Selected file/folder: name, type, exact size, contents, flags, path, Show in Explorer.
+
+    Compact on purpose: rows with nothing to say are hidden so the path and the Explorer button always fit.
+    """
+
+    _ROWS = ("Type", "Size", "Modified", "Contents", "Notes")
 
     def __init__(self, parent: tk.Misc, on_reveal: Callable[[], None]) -> None:
-        super().__init__(parent)
+        super().__init__(parent, padding=12)
         self._on_reveal = on_reveal
         section_title(self.body, "Selected item").pack(fill="x")
 
         self.name_label = tk.Label(
             self.body, text="Click a rectangle to see details.", bg=COLORS["card"], fg=COLORS["text"],
-            font=font(12, "bold"), anchor="w", justify="left", wraplength=220,
+            font=font(11, "bold"), anchor="w", justify="left", wraplength=190,
         )
-        self.name_label.pack(fill="x", pady=(10, 4))
+        self.name_label.pack(fill="x", pady=(6, 4))
 
+        self._rows_holder = tk.Frame(self.body, bg=COLORS["card"])
+        self._rows_holder.pack(fill="x")
+        self._row_frames: dict[str, tk.Frame] = {}
         self._rows: dict[str, tk.Label] = {}
-        for key in ("Type", "Size", "Category"):
-            row = tk.Frame(self.body, bg=COLORS["card"])
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=key, bg=COLORS["card"], fg=COLORS["text_dim"], font=font(9), width=9, anchor="w").pack(side="left")
-            value = tk.Label(row, text="—", bg=COLORS["card"], fg=COLORS["text"], font=font(10), anchor="w")
+        for key in self._ROWS:
+            row = tk.Frame(self._rows_holder, bg=COLORS["card"])
+            tk.Label(row, text=key, bg=COLORS["card"], fg=COLORS["text_dim"], font=font(9), width=8, anchor="nw").pack(side="left", anchor="n")
+            value = tk.Label(
+                row, text="", bg=COLORS["card"], fg=COLORS["text"], font=font(9), anchor="w", justify="left", wraplength=125
+            )
             value.pack(side="left", fill="x", expand=True)
+            self._row_frames[key] = row
             self._rows[key] = value
 
-        tk.Label(self.body, text="Path", bg=COLORS["card"], fg=COLORS["text_dim"], font=font(9), anchor="w").pack(
-            fill="x", pady=(8, 2)
-        )
         self.path_var = tk.StringVar(value="")
         self.path_entry = tk.Entry(
             self.body, textvariable=self.path_var, state="readonly", readonlybackground=COLORS["bg_alt"],
             fg=COLORS["text"], relief="flat", font=font(9),
         )
-        self.path_entry.pack(fill="x", pady=(0, 10))
-
+        self.path_entry.pack(fill="x", pady=(8, 6))
         self.reveal_button = FlatButton(self.body, "Show in File Explorer", self._on_reveal_click, primary=True)
         self.reveal_button.pack(fill="x")
         self.reveal_button.set_enabled(False)
 
+        self.largest_label = tk.Label(
+            self.body, text="", bg=COLORS["card"], fg=COLORS["text_dim"], font=font(9), anchor="w", justify="left",
+            wraplength=190,
+        )
+        self.largest_label.pack(fill="x", pady=(8, 0))
+
+    def _show_rows(self, texts: dict[str, str]) -> None:
+        for key in self._ROWS:
+            self._row_frames[key].pack_forget()
+        for key in self._ROWS:
+            if texts.get(key):
+                self._rows[key].configure(text=texts[key])
+                self._row_frames[key].pack(fill="x", pady=1)
+
+    def clear(self, message: str = "Click a rectangle to see details.") -> None:
+        self.name_label.configure(text=message)
+        self._show_rows({})
+        self.largest_label.configure(text="")
+        self.path_var.set("")
+        self.reveal_button.set_enabled(False)
+
     def show_node(self, node: TreeNode) -> None:
         self.name_label.configure(text=node.name)
-        self._rows["Type"].configure(text="Folder" if node.is_dir else "File")
-        self._rows["Size"].configure(text=f"{format_bytes(node.size)}  ({format_count(node.size)} bytes)")
-        self._rows["Category"].configure(text=node.category)
+        if node.is_dir:
+            kind = "Folder"
+        elif node.synthetic:
+            kind = "Grouped small files"
+        else:
+            kind = f"File  ·  {node.category}"
+        if node.denied:
+            size = "Unknown (access denied)"
+        else:
+            size = f"{format_bytes(node.size)}  ({format_count(node.size)} bytes)"
+        if node.is_dir:
+            contents = f"{format_count(node.file_count)} files, {format_count(node.dir_count)} folders"
+        elif node.synthetic:
+            contents = f"{format_count(node.file_count)} files"
+        else:
+            contents = ""
+        notes = []
+        if node.hidden:
+            notes.append("Hidden")
+        if node.system:
+            notes.append("System")
+        if node.denied:
+            notes.append("Access denied: size unknown, not zero")
+        self._show_rows({
+            "Type": kind,
+            "Size": size,
+            "Modified": datetime.fromtimestamp(node.mtime).strftime("%Y-%m-%d %H:%M") if node.mtime else "",
+            "Contents": contents,
+            "Notes": ", ".join(notes),
+        })
+        biggest = [child for child in node.children if child.size > 0][:3] if node.is_dir else []
+        self.largest_label.configure(
+            text=("Largest items\n" + "\n".join(f"{format_bytes(c.size):>9}  {c.name}" for c in biggest)) if biggest else ""
+        )
         self.path_var.set(node.path)
         self.reveal_button.set_enabled(bool(node.path))
 

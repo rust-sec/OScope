@@ -36,6 +36,22 @@ def format_used_of_total(used: float, total: float) -> str:
     return f"{used / scale:.{decimals}f} / {total / scale:.{decimals}f} {_UNITS[unit]}"
 
 
+def format_delta(num_bytes: float) -> str:
+    """A signed size change: ``+18 GB``, ``-2.1 GB``, or ``no change``."""
+    if round(num_bytes) == 0:
+        return "no change"
+    return ("+" if num_bytes > 0 else "-") + format_bytes(abs(num_bytes))
+
+
+def shorten_middle(text: str, limit: int = 70) -> str:
+    """Shorten long text by cutting out the middle, keeping both ends (good for paths)."""
+    if len(text) <= limit or limit < 8:
+        return text
+    keep = limit - 1
+    head = keep // 3
+    return f"{text[:head]}…{text[-(keep - head):]}"
+
+
 def format_percent(value: float) -> str:
     """``42.4`` -> ``"42%"``."""
     return f"{value:.0f}%"

@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from typing import Optional
 
+from app.history import storage as storage_history
 from app.history.records import EventRow, MetricRow
 from app.utils.constants import MEMORY_HIGH_PERCENT
 
@@ -30,6 +32,7 @@ class HistoryContext:
     events: tuple[EventRow, ...]                # oldest first
     memory_groups: tuple[GroupCorrelation, ...]
     memory_high_samples: int
+    storage: Optional[storage_history.StorageComparison] = None   # newest saved folder scan against the one before
 
 
 def _metric(row: sqlite3.Row) -> MetricRow:
@@ -76,6 +79,19 @@ def memory_high_groups(
     return [GroupCorrelation(r["name"], r["hits"], samples) for r in rows], samples
 
 
+def latest_storage_comparison(conn: sqlite3.Connection) -> Optional[storage_history.StorageComparison]:
+    """The most recently scanned folder's newest scan against the previous one, if there are two."""
+    row = conn.execute("SELECT root FROM storage_snapshots ORDER BY ts DESC, id DESC LIMIT 1").fetchone()
+    if row is None:
+        return None
+    summaries = storage_history.list_snapshots(conn, row["root"], 2)
+    if len(summaries) < 2:
+        return None
+    newer = storage_history.load_snapshot(conn, summaries[0].id)
+    older = storage_history.load_snapshot(conn, summaries[1].id)
+    return storage_history.compare(older, newer) if older and newer else None
+
+
 def build_context(conn: sqlite3.Connection, now: int, hours: int = 24) -> HistoryContext:
     since = now - hours * _HOUR
     groups, samples = memory_high_groups(conn, since)
@@ -85,4 +101,5 @@ def build_context(conn: sqlite3.Connection, now: int, hours: int = 24) -> Histor
         events=tuple(recent_events(conn, since)),
         memory_groups=tuple(groups),
         memory_high_samples=samples,
+        storage=latest_storage_comparison(conn),
     )

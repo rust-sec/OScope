@@ -157,10 +157,12 @@ class GuiTests(unittest.TestCase):
         """While a (deliberately slowed) scan runs, the Tk loop must keep ticking."""
         view = self.window.storage
         ticks: list[float] = []
+        running = [True]
 
         def tick() -> None:
             ticks.append(time.monotonic())
-            self.root.after(20, tick)
+            if running[0]:
+                self.root.after(20, tick)  # stops re-arming when the test is over, so no timer outlives it
 
         with tempfile.TemporaryDirectory() as tmp:
             for i in range(250):
@@ -179,6 +181,7 @@ class GuiTests(unittest.TestCase):
                     self.root.update()
                     time.sleep(0.005)
                 pump(self.root, 0.2)
+        running[0] = False
 
         self.assertGreater(len(ticks), 20, "the GUI thread was blocked while scanning")
         longest_gap = max(b - a for a, b in zip(ticks, ticks[1:]))

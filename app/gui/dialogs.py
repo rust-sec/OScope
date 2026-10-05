@@ -172,22 +172,39 @@ def show_settings(
     return dialog
 
 
-def show_evidence_details(root: tk.Misc, readings: Mapping[str, Reading]) -> tk.Toplevel:
-    """Every evidence source with its state, the reason for any gap, and where the number came from."""
-    dialog = _make_dialog(root, "What OScope can measure on this PC", 680, 520)
+def show_text_dialog(
+    root: tk.Misc, title: str, text: str, width: int = 680, height: int = 520, copyable: bool = True
+) -> tk.Toplevel:
+    """A read-only, scrollable, selectable text window with Close (and Copy) buttons."""
+    dialog = _make_dialog(root, title, width, height)
     box = tk.Frame(dialog, bg=COLORS["card"])
     box.pack(fill="both", expand=True, padx=24, pady=20)
-    FlatButton(box, "Close", dialog.destroy, primary=True).pack(side="bottom", anchor="e", pady=(12, 0))
+    buttons = tk.Frame(box, bg=COLORS["card"])
+    buttons.pack(side="bottom", fill="x", pady=(12, 0))
+    FlatButton(buttons, "Close", dialog.destroy, primary=True).pack(side="right")
+
     holder = tk.Frame(box, bg=COLORS["card"])
     holder.pack(side="top", fill="both", expand=True)
     scrollbar = ttk.Scrollbar(holder, orient="vertical", style="Oscope.Vertical.TScrollbar")
-    text = tk.Text(
+    body = tk.Text(
         holder, wrap="word", bg=COLORS["bg_alt"], fg=COLORS["text"], relief="flat", font=font(10), padx=12, pady=10,
         highlightthickness=0, yscrollcommand=scrollbar.set, cursor="arrow",
     )
-    scrollbar.configure(command=text.yview)
+    scrollbar.configure(command=body.yview)
     scrollbar.pack(side="right", fill="y")
-    text.pack(side="left", fill="both", expand=True)
-    text.insert("1.0", labels.evidence_report(readings))
-    text.configure(state="disabled")  # read-only, but still selectable for copying
+    body.pack(side="left", fill="both", expand=True)
+    body.insert("1.0", text)
+    body.configure(state="disabled")  # read-only, but still selectable for copying
+
+    if copyable:
+        def copy() -> None:
+            dialog.clipboard_clear()
+            dialog.clipboard_append(text)
+
+        FlatButton(buttons, "Copy", copy).pack(side="right", padx=(0, 8))
     return dialog
+
+
+def show_evidence_details(root: tk.Misc, readings: Mapping[str, Reading]) -> tk.Toplevel:
+    """Every evidence source with its state, the reason for any gap, and where the number came from."""
+    return show_text_dialog(root, "What OScope can measure on this PC", labels.evidence_report(readings))

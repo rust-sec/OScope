@@ -11,11 +11,13 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 from app.core import tree_utils
 from app.core.tree_scanner import TreeScanResult
 from app.history.records import Operation
+from app.utils.formatting import format_bytes, format_delta
 
 DIR_LIST_LIMIT = 200
 DIR_MAX_DEPTH = 3
@@ -185,3 +187,37 @@ def compare(older: StorageSnapshot, newer: StorageSnapshot) -> StorageComparison
         older=older, newer=newer, total_delta=newer.total_size - older.total_size,
         categories=categories, changed_dirs=known[:CHANGES_SHOWN] + unknown[:CHANGES_SHOWN], warnings=warnings,
     )
+
+
+def describe(comparison: StorageComparison) -> str:
+    """Plain-text account of a comparison, for the dialog and for copying."""
+    older, newer = comparison.older, comparison.newer
+    stamp = lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")  # noqa: E731
+    lines = [
+        f"Changes in {newer.root}",
+        f"Earlier scan: {stamp(older.ts)}    Later scan: {stamp(newer.ts)}",
+        "",
+        f"Total: {format_bytes(older.total_size)} to {format_bytes(newer.total_size)}  ({format_delta(comparison.total_delta)})",
+        "",
+        "BY TYPE",
+    ]
+    moved = [c for c in comparison.categories if c.delta]
+    lines += [f"  {c.category:<12}{format_delta(c.delta):>10}   ({format_bytes(c.before)} to {format_bytes(c.after)})" for c in moved] \
+        or ["  No file type changed in size."]
+
+    lines += ["", "BIGGEST FOLDER CHANGES"]
+    if comparison.changed_dirs:
+        for change in comparison.changed_dirs:
+            if change.delta is None:
+                size = change.after if change.after is not None else change.before
+                lines.append(f"  {'?':>10}   {change.path}  ({change.note}; {format_bytes(size or 0)})")
+            else:
+                note = f"  ({change.note})" if change.note else ""
+                lines.append(f"  {format_delta(change.delta):>10}   {change.path}{note}")
+    else:
+        lines.append("  No folder changed in size.")
+
+    if comparison.warnings:
+        lines += ["", "READ THIS WITH CARE"] + [f"  - {warning}" for warning in comparison.warnings]
+    lines += ["", "This compares what each scan found. It shows where space changed, not why."]
+    return "\n".join(lines) + "\n"
