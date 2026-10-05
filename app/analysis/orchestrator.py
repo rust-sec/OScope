@@ -7,7 +7,7 @@ It measures nothing itself and has no side effects, so it is easy to test and sa
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Sequence
+from typing import Optional, Sequence
 
 from app.analysis import workloads
 from app.analysis.detectors import DETECTOR_READINGS, DETECTORS, group_evidence, count_suffix, missing_reading
@@ -20,6 +20,7 @@ from app.collectors import labels
 from app.collectors.base import Availability, Reading
 from app.core.diagnostics import LEVEL_ORDER
 from app.core.sampler import SampleRecord, Snapshot
+from app.history.queries import HistoryContext
 from app.utils.constants import ACTIVE_CPU_PERCENT, TOP_GROUPS_SHOWN
 from app.utils.formatting import format_bytes, format_duration, format_used_of_total
 
@@ -29,9 +30,10 @@ def run_question(
     snapshot: Snapshot,
     window: Sequence[SampleRecord],
     workload: str = workloads.DEFAULT_WORKLOAD,
+    history: Optional[HistoryContext] = None,
 ) -> DiagnosticResult:
     question = QUESTIONS[question_id]
-    facts = Facts(snapshot, window, workload)
+    facts = Facts(snapshot, window, workload, history)
 
     # layers 1, 2 and 4: one finding per signal this question looks at
     findings = [DETECTORS[name](facts) for name in question.detectors]

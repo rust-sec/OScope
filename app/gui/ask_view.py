@@ -17,11 +17,13 @@ from app.analysis.orchestrator import run_question
 from app.analysis.questions import QUESTION_ORDER, QUESTIONS
 from app.collectors import labels
 from app.core.sampler import SampleRecord, Snapshot
+from app.history.queries import HistoryContext
 from app.gui.components import Card, FlatButton, ScrollableFrame, font, section_title
 from app.utils.background import BackgroundRunner
 from app.utils.constants import COLORS, LEVEL_COLORS
 
 ContextProvider = Callable[[], tuple[Optional[Snapshot], Sequence[SampleRecord]]]
+HistoryProvider = Callable[[], Optional[HistoryContext]]
 
 _PLACEHOLDER = "Choose a question above. OScope answers only from what it can measure on this PC."
 _WAITING = "OScope is still taking its first measurements. Try again in a moment."
@@ -43,12 +45,16 @@ class AskView(tk.Frame):
         navigate: Callable[[str], None],
         workload: str = workloads.DEFAULT_WORKLOAD,
         on_workload_change: Optional[Callable[[str], None]] = None,
+        get_history: Optional[HistoryProvider] = None,
+        on_answer: Optional[Callable[[DiagnosticResult], None]] = None,
     ) -> None:
         super().__init__(parent, bg=COLORS["bg"])
         self._runner = runner
         self._get_context = get_context
         self._navigate = navigate
         self._on_workload_change = on_workload_change
+        self._get_history = get_history
+        self._on_answer = on_answer
         self._token = 0
         self._wrap_labels: list[tk.Label] = []
         self._last_width = 0
@@ -86,7 +92,7 @@ class AskView(tk.Frame):
         self.workload_box.pack(anchor="w", pady=(2, 0))
         self.workload_box.bind("<<ComboboxSelected>>", lambda _e: self._on_workload_selected())
 
-        # -- questions: a uniform grid, the long last one spans two columns ---------------------
+        # -- questions: a uniform grid ----------------------------------------------------------------
         buttons = tk.Frame(self, bg=COLORS["bg"])
         buttons.grid(row=1, column=0, sticky="ew", pady=(14, 6))
         for column in range(3):
@@ -95,11 +101,7 @@ class AskView(tk.Frame):
             button = FlatButton(
                 buttons, QUESTIONS[question_id].text, lambda q=question_id: self.ask(q), primary=question_id == "slow"
             )
-            last = index == len(QUESTION_ORDER) - 1
-            button.grid(
-                row=index // 3, column=index % 3, columnspan=2 if last else 1, sticky="ew",
-                padx=(0, 8), pady=(0, 8),
-            )
+            button.grid(row=index // 3, column=index % 3, sticky="ew", padx=(0, 8), pady=(0, 8))
             self.question_buttons[question_id] = button
 
         # -- results -----------------------------------------------------------------------
@@ -120,8 +122,14 @@ class AskView(tk.Frame):
         token = self._token
         self._show_message("Looking at the evidence...")
         window_copy, workload = list(window), self.workload_id
+        read_history = self._get_history if question_id == "changed" else None
+
+        def work() -> DiagnosticResult:
+            history = read_history() if read_history is not None else None  # reads the database: off the GUI thread
+            return run_question(question_id, snapshot, window_copy, workload, history)
+
         self._runner.submit(
-            lambda: run_question(question_id, snapshot, window_copy, workload),
+            work,
             on_done=lambda result: self._on_result(token, result),
             on_error=lambda exc: self._on_error(token),
         )
@@ -131,6 +139,8 @@ class AskView(tk.Frame):
             return  # the user already asked something else
         self.last_result = result
         self._render(result)
+        if self._on_answer is not None:
+            self._on_answer(result)
 
     def _on_error(self, token: int) -> None:
         if token == self._token:

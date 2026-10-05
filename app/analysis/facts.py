@@ -9,15 +9,25 @@ from app.analysis.grouping import BROWSER_KEYS, ProcessGroup
 from app.analysis.trends import MetricState
 from app.collectors.base import Reading
 from app.core.sampler import SampleRecord, Snapshot
+from app.history.queries import HistoryContext
+
+MIN_HISTORY_ROWS = 4  # fewer recorded measurements than this is not enough to say anything about change
 
 
 class Facts:
     """Read-only view over one snapshot and its history. Nothing here measures anything new."""
 
-    def __init__(self, snapshot: Snapshot, window: Sequence[SampleRecord], workload: str = "general") -> None:
+    def __init__(
+        self,
+        snapshot: Snapshot,
+        window: Sequence[SampleRecord],
+        workload: str = "general",
+        history: Optional[HistoryContext] = None,
+    ) -> None:
         self.snapshot = snapshot
         self.window = list(window)
         self.workload = workload
+        self.history = history
         self._states: dict[tuple[str, float], MetricState] = {}
 
     # -- history -----------------------------------------------------------------
@@ -69,6 +79,8 @@ class Facts:
             return snap.storage is not None
         if token == "groups":
             return bool(snap.process_groups)
+        if token == "history":
+            return self.history is not None and len(self.history.metrics) >= MIN_HISTORY_ROWS
         return self.reading(token) is not None
 
     # -- programs ----------------------------------------------------------------

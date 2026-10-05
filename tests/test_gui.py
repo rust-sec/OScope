@@ -454,7 +454,7 @@ class GuiTests(unittest.TestCase):
 
     def test_21_app_opens_on_the_question_screen(self):
         self.assertIn("ask", self.window._views)
-        self.assertEqual(list(self.window.ask.question_buttons), ["slow", "ram", "heat", "storage", "everything"])
+        self.assertEqual(list(self.window.ask.question_buttons), ["slow", "ram", "heat", "storage", "changed", "everything"])
         window = self.window
         window.show_view("ask")
         self.assertEqual(window._current, "ask")
@@ -548,6 +548,80 @@ class GuiTests(unittest.TestCase):
         self.assertEqual({f.id for f in result.findings}, {"cpu", "memory", "disk", "gpu", "storage", "power", "thermal", "startup"})
         self.assertTrue(result.sections)
         self.assertTrue(result.summary)
+
+    # -- Phase 4: history ----------------------------------------------------------------------
+    def test_29_what_changed_uses_the_recorded_history(self):
+        from app.history.queries import HistoryContext
+        from app.history.records import MetricRow
+
+        now = 1_800_000_000
+        gb = 2 ** 30
+        rows = [MetricRow(now - m * 60, 20.0, 45.0 if m > 15 else 80.0, None, None, None, None, None, None,
+                          (200 - (120 - m) * 0.1) * gb, 500 * gb, 15) for m in range(120, 0, -1)]
+        context = HistoryContext(now, tuple(rows), (), (), 0)
+        view = self.window.ask
+        view._get_history = lambda: context
+        try:
+            result = self._ask("changed", self._busy_context())
+        finally:
+            view._get_history = self.window.history.context
+        self.assertEqual([f.id for f in result.findings], ["changes"])
+        self.assertIn("memory use", result.findings[0].happening)
+        self.assertIn("What changed recently", "\n".join(self._texts(view.scroll.body)))
+
+    def test_30_notable_answers_are_remembered_as_events(self):
+        history = self.window.history
+        self.assertTrue(history.enabled)
+        history._last_event.clear()
+        self._ask("slow", self._busy_context())
+        context = history.context()
+        self.assertIsNotNone(context)
+        self.assertIn("memory", {e.finding_id for e in context.events})
+        self.assertTrue(str(history.path).startswith(self._data_dir.name))  # test data folder, not the real one
+
+    def test_31_settings_dialog_toggles_history_and_clears_it(self):
+        from app.gui.dialogs import show_settings
+
+        applied = []
+        local = AppSettings()
+        dialog = show_settings(self.root, local, lambda s: applied.append((s.history_enabled, s.refresh_interval)), self.window.history)
+        try:
+            widgets = self._all_widgets(dialog)
+            checkbox = next(w for w in widgets if w.winfo_class() == "Checkbutton")
+            self.assertIn("remember measurements", str(checkbox.cget("text")))
+            texts = [str(w.cget("text")) for w in widgets if w.winfo_class() == "Label"]
+            self.assertTrue(any("nothing is sent anywhere" in t for t in texts))
+            self.assertTrue(any(t.startswith("History is on") for t in texts))
+
+            from unittest import mock
+            clear = next(w for w in widgets if w.winfo_class() == "Label" and str(w.cget("text")) == "Clear history")
+            with mock.patch("app.gui.dialogs.messagebox.askyesno", return_value=True) as ask:
+                clear._command()
+            ask.assert_called_once()
+            status = next(w for w in widgets if w.winfo_class() == "Label" and str(w.cget("text")) == "History cleared.")
+            self.assertTrue(status.winfo_exists())
+            context = self.window.history.context()
+            self.assertEqual((len(context.metrics), len(context.events)), (0, 0))
+
+            checkbox.invoke()   # untick
+            save = next(w for w in widgets if w.winfo_class() == "Label" and str(w.cget("text")) == "Save")
+            save._command()
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        self.assertEqual(applied, [(False, local.refresh_interval)])
+
+    def test_32_main_window_applies_the_history_switch_and_saves_it(self):
+        window = self.window
+        try:
+            window._apply_settings(AppSettings(history_enabled=False))
+            self.assertFalse(window.history.enabled)
+            self.assertFalse(SettingsStore.default().load().history_enabled)
+            self.assertIn("off", window.history.status_text())
+        finally:
+            window._apply_settings(AppSettings())
+        self.assertTrue(window.history.enabled)
+        self.assertTrue(SettingsStore.default().load().history_enabled)
 
 
 if __name__ == "__main__":

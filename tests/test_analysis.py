@@ -405,7 +405,7 @@ class QuestionTests(unittest.TestCase):
 
     def test_everything_has_all_findings_sections_and_unverified_rows(self):
         result = run("everything", make_snapshot(readings=dict([missing("temp.acpi_max")])))
-        self.assertEqual({f.id for f in result.findings}, set(detectors.DETECTORS))
+        self.assertEqual({f.id for f in result.findings}, set(detectors.DETECTORS) - {"changes"})  # history has its own question
         titles = [s.title for s in result.sections]
         self.assertIn("Right now", titles)
         self.assertIn("What OScope can measure on this PC", titles)

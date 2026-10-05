@@ -6,6 +6,7 @@ cause and effect; never claim more than the data shows; say plainly when somethi
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Callable
 
 from app.analysis.facts import Facts
@@ -29,7 +30,7 @@ from app.utils.constants import (
     TEMP_WARM_C,
     TOP_GROUPS_SHOWN,
 )
-from app.utils.formatting import format_bytes, format_used_of_total
+from app.utils.formatting import format_bytes, format_duration, format_used_of_total
 
 OBSERVED = EvidenceStrength.OBSERVED
 UNVERIFIED = EvidenceStrength.UNVERIFIED
@@ -357,6 +358,97 @@ def detect_startup(f: Facts) -> Finding:
     return Finding("startup", "normal", "Startup programs", happening, contributing)
 
 
+# --------------------------------------------------------------------------- #
+# What changed (needs recorded history)
+# --------------------------------------------------------------------------- #
+RECENT_MINUTES = 15
+BEFORE_MINUTES = 60
+NOTABLE_POINT_CHANGE = 15        # percentage points
+NOTABLE_FREE_DROP_BYTES = 5 * 1024 ** 3
+NOTABLE_FREE_DROP_FRACTION = 0.03
+_METRIC_COMPARISONS = (("mem_pct", "Memory use"), ("cpu", "CPU load"), ("commit_pct", "Memory commitment"))
+
+
+def _mean_of(rows, attribute: str):
+    values = [getattr(row, attribute) for row in rows if getattr(row, attribute) is not None]
+    return sum(values) / len(values) if len(values) >= 2 else None
+
+
+def _clock(ts: int, now: int) -> str:
+    moment = datetime.fromtimestamp(ts)
+    return moment.strftime("%H:%M") if now - ts < 20 * 3600 else moment.strftime("%a %H:%M")
+
+
+def detect_changes(f: Facts) -> Finding:
+    history = f.history
+    if history is None or len(history.metrics) < 4:
+        have = 0 if history is None else len(history.metrics)
+        reason = "history is off or unavailable" if history is None else f"only {have} measurements are recorded so far"
+        return Finding(
+            "changes", "normal", "What changed",
+            f"OScope has too little recorded history to compare ({reason}). While History is on in Settings, "
+            "it keeps about one measurement every 30 seconds, so ask again after it has been running for a while.",
+            [Evidence("history.none", "Recorded history", f"Could not verify. {reason}", UNVERIFIED)],
+        )
+
+    now, metrics = history.now, history.metrics
+    recent = [m for m in metrics if m.ts >= now - RECENT_MINUTES * 60]
+    before = [m for m in metrics if now - (RECENT_MINUTES + BEFORE_MINUTES) * 60 <= m.ts < now - RECENT_MINUTES * 60]
+    span = metrics[-1].ts - metrics[0].ts
+    contributing = [
+        Evidence("history.coverage", "Recorded history", f"{len(metrics)} measurements over {format_duration(span)}", OBSERVED, "local history"),
+    ]
+    notable: list[str] = []
+    goto = None
+
+    for attribute, label in _METRIC_COMPARISONS:
+        now_mean, before_mean = _mean_of(recent, attribute), _mean_of(before, attribute)
+        if now_mean is None or before_mean is None:
+            continue
+        delta = now_mean - before_mean
+        contributing.append(
+            Evidence(
+                f"history.{attribute}", label,
+                f"{now_mean:.0f}% on average in the last {RECENT_MINUTES} minutes, {before_mean:.0f}% in the hour before ({delta:+.0f} points)",
+                OBSERVED, "local history",
+            )
+        )
+        if abs(delta) >= NOTABLE_POINT_CHANGE:
+            notable.append(f"{label.lower()} ({delta:+.0f} points)")
+
+    with_space = [m for m in metrics if m.free_bytes is not None]
+    if len(with_space) >= 2 and with_space[-1].ts - with_space[0].ts >= 1800:
+        first, last = with_space[0], with_space[-1]
+        diff = last.free_bytes - first.free_bytes
+        contributing.append(
+            Evidence(
+                "history.free", "Free space on the system drive",
+                f"{format_bytes(first.free_bytes)} to {format_bytes(last.free_bytes)} over {format_duration(last.ts - first.ts)} "
+                f"({'+' if diff >= 0 else '-'}{format_bytes(abs(diff))})",
+                OBSERVED, "local history",
+            )
+        )
+        total = last.total_bytes or 0
+        if -diff >= NOTABLE_FREE_DROP_BYTES or (total and -diff >= NOTABLE_FREE_DROP_FRACTION * total):
+            notable.append(f"free space on the system drive (-{format_bytes(-diff)})")
+            goto = "storage"
+
+    events = [e for e in history.events if e.level != "normal"][-8:]
+    for index, event in enumerate(events):
+        contributing.append(
+            Evidence(f"history.event.{index}", _clock(event.ts, now), f"{event.title} ({event.level})", OBSERVED, "local history")
+        )
+
+    if notable:
+        level = "info"
+        happening = "Some measurements changed noticeably: " + "; ".join(notable) + "."
+    else:
+        level = "normal"
+        happening = f"Nothing changed much compared with the hour before the last {RECENT_MINUTES} minutes."
+    consider = ["Open the Storage view to see which folders take the most space."] if goto else []
+    return Finding("changes", level, "What changed recently" if notable else "What changed", happening, contributing, consider, goto=goto)
+
+
 DETECTORS: dict[str, Callable[[Facts], Finding]] = {
     "cpu": detect_cpu,
     "memory": detect_memory,
@@ -366,6 +458,7 @@ DETECTORS: dict[str, Callable[[Facts], Finding]] = {
     "power": detect_power,
     "thermal": detect_thermal,
     "startup": detect_startup,
+    "changes": detect_changes,
 }
 
 # Readings each detector depends on, so a result can list what it could not check.
@@ -378,6 +471,7 @@ DETECTOR_READINGS: dict[str, tuple[str, ...]] = {
     "power": ("power.on_battery", "power.mode"),
     "thermal": ("temp.acpi_max", "fan.rpm"),
     "startup": ("startup.enabled_count",),
+    "changes": (),
 }
 
 

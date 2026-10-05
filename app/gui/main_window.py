@@ -13,6 +13,7 @@ from app.core.system_info import get_static_info
 from app.gui.components import FlatButton, apply_theme, font
 from app.gui.ask_view import AskView
 from app.gui.dialogs import AppSettings, show_about, show_settings
+from app.history.service import HistoryService
 from app.history.settings_store import SettingsStore
 from app.gui.overview_view import OverviewView
 from app.gui.processes_view import ProcessesView
@@ -36,6 +37,7 @@ class MainWindow:
         self.root = root
         self.settings_store = SettingsStore.default()
         self.settings = self.settings_store.load()
+        self.history = HistoryService.default(self.settings.history_enabled)
         self.runner = BackgroundRunner(root)
         self.info = get_static_info()
         self.latest: Optional[Snapshot] = None
@@ -157,6 +159,8 @@ class MainWindow:
             navigate=self.show_view,
             workload=self.settings.workload,
             on_workload_change=self._on_workload_change,
+            get_history=self.history.context,
+            on_answer=self.history.record_result,
         )
         self.overview = OverviewView(self.content, self.info)
         self.processes = ProcessesView(self.content, self.runner, self.refresh_now)
@@ -188,13 +192,14 @@ class MainWindow:
 
     def _on_snapshot(self, snap: Snapshot) -> None:
         self.latest = snap
+        self.history.on_snapshot(snap)
         self.updated_label.configure(text=f"Last updated: {format_clock(snap.taken_at)}")
         self.overview.update_snapshot(snap)
         self.processes.update_snapshot(snap)
 
     # ------------------------------------------------------------------------ dialogs
     def open_settings(self) -> None:
-        show_settings(self.root, self.settings, self._apply_settings)
+        show_settings(self.root, self.settings, self._apply_settings, self.history)
 
     def _on_workload_change(self, workload: str) -> None:
         self.settings.workload = workload
@@ -203,6 +208,7 @@ class MainWindow:
     def _apply_settings(self, settings: AppSettings) -> None:
         self.sampler.set_interval(settings.refresh_interval)
         self.storage.set_threshold(settings.large_file_mb)
+        self.history.set_enabled(settings.history_enabled)
         self.settings_store.save(settings)
 
     # ------------------------------------------------------------------------ report
@@ -230,6 +236,7 @@ class MainWindow:
     def _on_close(self) -> None:
         self.sampler.stop()
         self.storage.cancel_running_scan()
+        self.history.close()
         self.runner.close()
         self.root.destroy()
 

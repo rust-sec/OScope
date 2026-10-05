@@ -50,13 +50,21 @@ QUESTIONS: dict[str, Question] = {
         ("storage",),
         frozenset({"low_free_scratch_app"}),
     ),
+    "changed": Question(
+        "changed",
+        "What changed recently?",
+        "Compares the last 15 minutes with the hour before, from OScope's local history.",
+        ("changes",),
+        ("changes",),
+        frozenset({"history_memory_groups"}),
+    ),
     "everything": Question(
         "everything",
-        "I don't know what's wrong. Show me everything.",
-        "A broad snapshot of everything OScope can see, and what it cannot.",
-        tuple(DETECTORS),
-        tuple(DETECTORS),
+        "Show me everything",
+        "For when you don't know what's wrong: a broad snapshot of everything OScope can see, and what it cannot.",
+        tuple(name for name in DETECTORS if name != "changes"),
+        tuple(name for name in DETECTORS if name != "changes"),
     ),
 }
 
-QUESTION_ORDER = ("slow", "ram", "heat", "storage", "everything")
+QUESTION_ORDER = ("slow", "ram", "heat", "storage", "changed", "everything")

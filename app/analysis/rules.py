@@ -237,6 +237,35 @@ def _load_without_sensors_build(f: Facts) -> Built:
     return text, [Evidence("heat.load", "CPU load", f"{state.latest:.0f}% now" + (f", average {state.mean:.0f}%" if state.basis == "sustained" else ""))]
 
 
+MIN_MEMORY_MOMENTS = 10
+MIN_HIT_SHARE = 0.6
+
+
+def _history_groups_when(f: Facts) -> bool:
+    history = f.history
+    if history is None or history.memory_high_samples < MIN_MEMORY_MOMENTS or not history.memory_groups:
+        return False
+    top = history.memory_groups[0]
+    return top.hits / top.samples >= MIN_HIT_SHARE
+
+
+def _history_groups_build(f: Facts) -> Built:
+    history = f.history
+    top = history.memory_groups[0]
+    text = (
+        f"{top.name} was among the 3 biggest memory users in {top.hits} of {top.samples} recorded moments when memory use "
+        f"was above {MEMORY_HIGH_PERCENT}%. This is an association in the recorded data; OScope cannot tell which came first."
+    )
+    evidence = [
+        Evidence(
+            f"history.group.{g.name}", g.name,
+            f"in the top 3 in {g.hits} of {g.samples} moments with high memory use", EvidenceStrength.CORRELATION, "local history",
+        )
+        for g in history.memory_groups
+    ]
+    return text, evidence
+
+
 RELATIONSHIP_RULES: tuple[Rule, ...] = (
     Rule("browser_memory", ("memory", "groups"), _browser_when, _browser_build),
     Rule("ram_and_disk", ("memory", "disk.read_bps", "disk.write_bps"), _ram_disk_when, _ram_disk_build),
@@ -254,6 +283,7 @@ RELATIONSHIP_RULES: tuple[Rule, ...] = (
         lambda f: f.state("cpu", CPU_HIGH_PERCENT).high and f.value("temp.acpi_max") >= TEMP_WARM_C,
         _temp_load_build("CPU", "cpu", CPU_HIGH_PERCENT),
     ),
+    Rule("history_memory_groups", ("history",), _history_groups_when, _history_groups_build, only_for=frozenset({"changed"})),
     Rule(
         "load_without_sensors", ("cpu", "!temp.acpi_max"), _load_is_high, _load_without_sensors_build,
         only_for=frozenset({"heat"}),

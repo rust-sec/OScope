@@ -25,6 +25,7 @@ class AppSettings:
     refresh_interval: int = REFRESH_INTERVAL_SECONDS
     large_file_mb: int = LARGE_FILE_THRESHOLD_MB
     workload: str = DEFAULT_WORKLOAD  # what the user is mostly doing; only changes the order of explanations
+    history_enabled: bool = True      # remember measurements between launches (local only)
 
     @classmethod
     def from_dict(cls, data: object) -> "AppSettings":
@@ -41,6 +42,9 @@ class AppSettings:
         workload = data.get("workload")
         if isinstance(workload, str) and workload in WORKLOADS:
             settings.workload = workload
+        history = data.get("history_enabled")
+        if isinstance(history, bool):
+            settings.history_enabled = history
         return settings
 
     def to_dict(self) -> dict:
