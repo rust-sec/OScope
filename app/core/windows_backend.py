@@ -18,6 +18,9 @@ Windows interfaces used
   SetProcessDpiAwareness (shcore)   sharp text on high-DPI screens (cosmetic)
   tasklist.exe                      session, window title, hosted services of one PID
   IsUserAnAdmin         (shell32)   whether the process is elevated (display only)
+  GetPerformanceInfo    (psapi)     system commit charge and limit
+  GetSystemPowerStatus  (kernel32)  AC / battery / battery saver
+  PowerGetEffectiveOverlayScheme (powrprof)  the Windows "power mode"
 """
 
 from __future__ import annotations
@@ -158,6 +161,123 @@ def get_uptime_seconds() -> Optional[float]:
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         kernel32.GetTickCount64.restype = ctypes.c_ulonglong
         return kernel32.GetTickCount64() / 1000.0
+    except Exception:
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# Commit charge, power state (read by the Phase 2 collectors)
+# --------------------------------------------------------------------------- #
+class _PerformanceInformation(ctypes.Structure):
+    """PERFORMANCE_INFORMATION (psapi). Sizes are in *pages*; multiply by PageSize."""
+
+    _fields_ = [
+        ("cb", ctypes.c_uint32),
+        ("CommitTotal", ctypes.c_size_t),
+        ("CommitLimit", ctypes.c_size_t),
+        ("CommitPeak", ctypes.c_size_t),
+        ("PhysicalTotal", ctypes.c_size_t),
+        ("PhysicalAvailable", ctypes.c_size_t),
+        ("SystemCache", ctypes.c_size_t),
+        ("KernelTotal", ctypes.c_size_t),
+        ("KernelPaged", ctypes.c_size_t),
+        ("KernelNonpaged", ctypes.c_size_t),
+        ("PageSize", ctypes.c_size_t),
+        ("HandleCount", ctypes.c_uint32),
+        ("ProcessCount", ctypes.c_uint32),
+        ("ThreadCount", ctypes.c_uint32),
+    ]
+
+
+def commit_bytes(commit_total_pages: int, commit_limit_pages: int, page_size: int) -> Optional[tuple[int, int]]:
+    """Pages -> ``(committed_bytes, limit_bytes)``; None if the numbers are not usable."""
+    if commit_limit_pages <= 0 or page_size <= 0 or commit_total_pages < 0:
+        return None
+    return commit_total_pages * page_size, commit_limit_pages * page_size
+
+
+def get_commit_charge() -> Optional[tuple[int, int]]:
+    """System-wide ``(committed_bytes, commit_limit_bytes)`` via GetPerformanceInfo (psapi).
+
+    Commit charge is the memory Windows has promised to processes (RAM + pagefile);
+    when it nears the limit, allocations start to fail even if RAM looks free.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        info = _PerformanceInformation()
+        info.cb = ctypes.sizeof(_PerformanceInformation)
+        if not ctypes.windll.psapi.GetPerformanceInfo(ctypes.byref(info), info.cb):  # type: ignore[attr-defined]
+            return None
+        return commit_bytes(int(info.CommitTotal), int(info.CommitLimit), int(info.PageSize))
+    except Exception:
+        return None
+
+
+class _SystemPowerStatus(ctypes.Structure):
+    """SYSTEM_POWER_STATUS (kernel32)."""
+
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", ctypes.c_uint32),
+        ("BatteryFullLifeTime", ctypes.c_uint32),
+    ]
+
+
+def get_power_status() -> Optional[dict[str, int]]:
+    """Raw GetSystemPowerStatus fields: ac_line, battery_flag, battery_percent, saver. None on failure.
+
+    Meaning of the raw values (decoded by ``app.collectors.windows.power``):
+    ac_line 0 = on battery, 1 = plugged in, 255 = unknown; battery_flag 128 = no battery;
+    battery_percent 0-100 or 255 = unknown; saver 1 = battery saver on.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        status = _SystemPowerStatus()
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):  # type: ignore[attr-defined]
+            return None
+        return {
+            "ac_line": int(status.ACLineStatus),
+            "battery_flag": int(status.BatteryFlag),
+            "battery_percent": int(status.BatteryLifePercent),
+            "saver": int(status.SystemStatusFlag),
+        }
+    except Exception:
+        return None
+
+
+class _Guid(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+def format_guid(data1: int, data2: int, data3: int, data4: bytes) -> str:
+    """Lower-case canonical GUID text, e.g. ``"00000000-0000-0000-0000-000000000000"``."""
+    tail = bytes(data4)
+    return f"{data1:08x}-{data2:04x}-{data3:04x}-{tail[:2].hex()}-{tail[2:].hex()}"
+
+
+def get_power_overlay_guid() -> Optional[str]:
+    """GUID of the active Windows power mode ("overlay scheme"); None if it cannot be read.
+
+    PowerGetEffectiveOverlayScheme exists on Windows 10 1709 and later; on anything
+    older, or if the call fails, this returns None and the caller reports "unavailable".
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        guid = _Guid()
+        if ctypes.windll.powrprof.PowerGetEffectiveOverlayScheme(ctypes.byref(guid)) != 0:  # type: ignore[attr-defined]
+            return None
+        return format_guid(guid.Data1, guid.Data2, guid.Data3, bytes(guid.Data4))
     except Exception:
         return None
 

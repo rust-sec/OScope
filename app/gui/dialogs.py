@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable
+from typing import Callable, Mapping
 
 from app.core import windows_backend
+from app.collectors import labels
+from app.collectors.base import Reading
 from app.gui.components import FlatButton, font
 from app.history.settings_store import AppSettings  # noqa: F401 - re-exported for the main window
 from app.utils.constants import APP_NAME, COLORS, REFRESH_INTERVAL_CHOICES
@@ -125,3 +127,24 @@ def show_settings(root: tk.Misc, settings: AppSettings, on_apply: Callable[[AppS
     buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(24, 0))
     FlatButton(buttons, "Cancel", dialog.destroy).pack(side="left")
     FlatButton(buttons, "Save", apply, primary=True).pack(side="left", padx=(8, 0))
+
+
+def show_evidence_details(root: tk.Misc, readings: Mapping[str, Reading]) -> tk.Toplevel:
+    """Every evidence source with its state, the reason for any gap, and where the number came from."""
+    dialog = _make_dialog(root, "What OScope can measure on this PC", 680, 520)
+    box = tk.Frame(dialog, bg=COLORS["card"])
+    box.pack(fill="both", expand=True, padx=24, pady=20)
+    FlatButton(box, "Close", dialog.destroy, primary=True).pack(side="bottom", anchor="e", pady=(12, 0))
+    holder = tk.Frame(box, bg=COLORS["card"])
+    holder.pack(side="top", fill="both", expand=True)
+    scrollbar = ttk.Scrollbar(holder, orient="vertical", style="Oscope.Vertical.TScrollbar")
+    text = tk.Text(
+        holder, wrap="word", bg=COLORS["bg_alt"], fg=COLORS["text"], relief="flat", font=font(10), padx=12, pady=10,
+        highlightthickness=0, yscrollcommand=scrollbar.set, cursor="arrow",
+    )
+    scrollbar.configure(command=text.yview)
+    scrollbar.pack(side="right", fill="y")
+    text.pack(side="left", fill="both", expand=True)
+    text.insert("1.0", labels.evidence_report(readings))
+    text.configure(state="disabled")  # read-only, but still selectable for copying
+    return dialog

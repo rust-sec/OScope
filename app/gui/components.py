@@ -253,17 +253,21 @@ class BarList(tk.Frame):
             ).grid(row=row, column=2, sticky="e")
 
 
-def make_table(parent: tk.Misc, columns: Sequence[tuple[str, str, int, str]], height: int = 12):
+def make_table(
+    parent: tk.Misc, columns: Sequence[tuple[str, str, int, str]], height: int = 12, expandable: bool = False
+):
     """Create a styled table with a scrollbar.
 
-    ``columns`` = ``(column_id, heading, width_px, anchor)``.
+    ``columns`` = ``(column_id, heading, width_px, anchor)``. With ``expandable`` the table
+    also has a narrow tree column holding the expand/collapse arrows (rows may have children);
+    callers can switch it off again with ``tree.configure(show="headings")``.
     Returns ``(container_frame, treeview)``.
     """
     container = tk.Frame(parent, bg=COLORS["card"])
     tree = ttk.Treeview(
         container,
         columns=[col[0] for col in columns],
-        show="headings",
+        show="tree headings" if expandable else "headings",
         selectmode="browse",
         height=height,
         style="Oscope.Treeview",
@@ -271,6 +275,9 @@ def make_table(parent: tk.Misc, columns: Sequence[tuple[str, str, int, str]], he
     for column_id, heading, width, anchor in columns:
         tree.heading(column_id, text=heading, anchor=anchor if anchor != "w" else "w")
         tree.column(column_id, width=width, minwidth=120 if column_id == columns[0][0] else 55, anchor=anchor, stretch=True)
+    if expandable:
+        tree.heading("#0", text="")
+        tree.column("#0", width=30, minwidth=30, stretch=False)
     scrollbar = ttk.Scrollbar(container, orient="vertical", command=tree.yview, style="Oscope.Vertical.TScrollbar")
     tree.configure(yscrollcommand=scrollbar.set)
     tree.pack(side="left", fill="both", expand=True)

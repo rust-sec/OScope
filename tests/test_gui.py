@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +22,10 @@ try:
     import tkinter as tk
     from tkinter import messagebox
 
+    from app.collectors import labels
     from app.core import report
+    from app.core.process_manager import ProcessInfo
+    from app.core.sampler import Snapshot
     from app.core.storage_manager import DirectoryScanner
     from app.gui.main_window import MainWindow
     from app.history.settings_store import AppSettings, SettingsStore
@@ -86,6 +90,8 @@ class GuiTests(unittest.TestCase):
         self.window.show_view("processes")
         pump(self.root, 0.5)
         view = self.window.processes
+        view.group_var.set(False)  # this test is about the flat, one-row-per-process table
+        pump(self.root, 0.1)
         self.assertGreater(len(view.tree.get_children()), 3)
 
         view.search_var.set("zzzz_no_such_process_zzzz")
@@ -108,6 +114,8 @@ class GuiTests(unittest.TestCase):
 
     def test_04_process_details_panel(self):
         view = self.window.processes
+        view.group_var.set(False)
+        pump(self.root, 0.1)
         view.tree.selection_set(str(os.getpid()))
         pump(self.root, 1.5)
         for label in ("Name", "PID", "Parent PID", "Memory", "CPU", "Status", "Executable"):
@@ -291,6 +299,122 @@ class GuiTests(unittest.TestCase):
         finally:
             window._apply_settings(AppSettings())  # restore defaults for any later test
         self.assertEqual(SettingsStore.default().load(), AppSettings())
+
+    # -- Phase 2: grouping by program ----------------------------------------------
+    @staticmethod
+    def _snapshot_with(processes):
+        return Snapshot(
+            taken_at=datetime.now(), cpu_percent=1.0, memory=None, storage=None, uptime_seconds=1.0,
+            processes=processes,
+        )
+
+    @staticmethod
+    def _proc(pid, name, mb, cpu=1.0):
+        return ProcessInfo(pid=pid, name=name, cpu_percent=cpu, memory_bytes=mb * MB, status="Running", ppid=1)
+
+    def test_14_processes_are_grouped_by_program(self):
+        view = self.window.processes
+        view.search_var.set("")
+        view.group_var.set(True)
+        procs = [
+            self._proc(9001, "chrome.exe", 100), self._proc(9002, "chrome.exe", 300),
+            self._proc(9003, "Chrome.exe", 50), self._proc(9004, "notepad.exe", 10),
+        ]
+        # fed directly and checked without pumping the event loop, so a real snapshot cannot interleave
+        view.update_snapshot(self._snapshot_with(procs))
+
+        top = view.tree.get_children()
+        self.assertEqual(top, ("g:chrome.exe", "g:notepad.exe"))          # biggest memory total first
+        self.assertEqual(len(view.tree.get_children("g:chrome.exe")), 3)
+        values = view.tree.item("g:chrome.exe", "values")
+        self.assertEqual((values[0], values[3]), ("Google Chrome  (3)", "450 MB"))
+        self.assertTrue(view.tree.item("9001", "values")[0].startswith("↳ chrome.exe"))
+        self.assertIn("2 programs", view.count_label.cget("text"))
+        self.assertIn("4 processes", view.count_label.cget("text"))
+        self.assertEqual(view.top_mem_list.winfo_children()[0].cget("text"), "Google Chrome ×3")
+        self.assertIn("tree", str(view.tree.cget("show")))
+
+    def test_15_selecting_a_group_shows_its_totals_and_keeps_them_live(self):
+        view = self.window.processes
+        view.search_var.set("")
+        view.group_var.set(True)
+        procs = [self._proc(9001, "chrome.exe", 100), self._proc(9002, "chrome.exe", 300)]
+        view.update_snapshot(self._snapshot_with(procs))
+
+        view._select_group("chrome.exe")
+        self.assertEqual(view._detail_labels["Program"].cget("text"), "Google Chrome")
+        self.assertEqual(view._detail_labels["Processes"].cget("text"), "2")
+        self.assertEqual(view._detail_labels["Memory sum"].cget("text"), "400 MB")
+        self.assertIn("shared", view._detail_labels["Note"].cget("text"))
+
+        procs[1] = self._proc(9002, "chrome.exe", 500)
+        view.update_snapshot(self._snapshot_with(procs))
+        self.assertEqual(view._detail_labels["Memory sum"].cget("text"), "600 MB")
+
+        view.update_snapshot(self._snapshot_with([self._proc(9004, "notepad.exe", 10)]))
+        self.assertIsNone(view._selected_group)  # the program went away
+
+    def test_16_search_by_pid_in_grouped_mode_and_toggle_back_to_flat(self):
+        view = self.window.processes
+        view.group_var.set(True)
+        procs = [self._proc(9001, "chrome.exe", 100), self._proc(9002, "chrome.exe", 300), self._proc(9004, "a.exe", 1)]
+        view.update_snapshot(self._snapshot_with(procs))
+
+        view.search_var.set("9002")
+        self.assertEqual(view.tree.get_children(), ("g:chrome.exe",))
+        self.assertEqual(view.tree.get_children("g:chrome.exe"), ("9002",))
+        view.search_var.set("")
+
+        view.group_var.set(False)
+        self.assertEqual(set(view.tree.get_children()), {"9001", "9002", "9004"})
+        self.assertNotIn("tree", str(view.tree.cget("show")))
+        self.assertIn("3 processes", view.count_label.cget("text"))
+
+        view.group_var.set(True)
+        view.update_snapshot(self.window.latest)  # back to real data for any later test
+
+    def test_17_overview_shows_every_evidence_source_with_an_honest_status(self):
+        overview = self.window.overview
+        snapshot = self.window.latest
+        overview.update_snapshot(snapshot)
+        for name, _label in labels.EVIDENCE_ROWS:
+            self.assertIn(name, overview.evidence_values)
+        # off Windows no collector exists for these, and the UI must say so instead of showing a number
+        self.assertIn("Not supported", overview.evidence_values["temp.acpi_max"].cget("text"))
+        self.assertIn("Not supported", overview.evidence_values["gpu.utilization"].cget("text"))
+        # disk activity is cross-platform: once warmed up it shows a rate or an honest reason
+        disk_text = overview.evidence_values["disk.read_bps"].cget("text")
+        self.assertTrue(disk_text.endswith("/s") or "Unavailable" in disk_text, disk_text)
+
+    def test_18_evidence_details_dialog_lists_reasons_and_closes(self):
+        self.window.show_view("overview")
+        dialog = self.window.overview.show_evidence_details()
+        try:
+            text_widgets = [w for w in dialog.winfo_children()[0].winfo_children()[1].winfo_children()
+                            if w.winfo_class() == "Text"]
+            content = text_widgets[0].get("1.0", "end")
+            self.assertIn("GPU load", content)
+            self.assertIn("never as a guessed number", content)
+            self.assertEqual(str(text_widgets[0].cget("state")), "disabled")
+        finally:
+            dialog.destroy()  # it holds a modal grab; release it for the other tests
+        self.root.update()
+
+    def test_20_privilege_state_is_shown_next_to_the_evidence(self):
+        from dataclasses import replace
+
+        overview = self.window.overview
+        for elevated, expected in ((True, "administrator"), (False, "Standard user"), (None, "")):
+            overview.update_snapshot(replace(self.window.latest, elevated=elevated))
+            self.assertIn(expected, overview.privilege_label.cget("text"))
+        overview.update_snapshot(self.window.latest)
+
+    def test_19_overview_status_cards_keep_their_height(self):
+        self.window.show_view("overview")
+        pump(self.root, 0.3)
+        overview = self.window.overview
+        self.assertGreaterEqual(overview.status_card.winfo_height(), 120)
+        self.assertGreaterEqual(overview.details_card.winfo_height(), 120)
 
 
 if __name__ == "__main__":

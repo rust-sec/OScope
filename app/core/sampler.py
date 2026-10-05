@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional, Sequence
 
+from app.analysis.grouping import ProcessGroup, group_processes
 from app.collectors.base import Availability, Collector, CollectorContext, Reading
 from app.collectors.registry import build_default_collectors
 from app.core import diagnostics, platform_ops, system_info
@@ -33,6 +34,7 @@ class Snapshot:
     processes: list[ProcessInfo] = field(default_factory=list)
     restricted_processes: int = 0
     findings: list[dict] = field(default_factory=list)
+    process_groups: list[ProcessGroup] = field(default_factory=list)  # processes grouped by program
     readings: dict[str, Reading] = field(default_factory=dict)  # evidence from collectors, by reading name
     elevated: Optional[bool] = None                              # running as administrator? None = unknown
 
@@ -137,6 +139,7 @@ class Sampler(threading.Thread):
                 memory.percent if memory else None,
                 storage.percent if storage else None,
             ),
+            process_groups=self._safe_call("process_groups", lambda: group_processes(process_list)) or [],
             readings=readings,
             elevated=self._elevated,
         )
